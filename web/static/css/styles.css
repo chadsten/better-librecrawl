@@ -776,6 +776,7 @@ body {
 
 .setting-group input[type="text"],
 .setting-group input[type="number"],
+.setting-group input[type="password"],
 .setting-group select,
 .setting-group textarea {
     width: 100%;
@@ -791,6 +792,7 @@ body {
 
 .setting-group input[type="text"]:focus,
 .setting-group input[type="number"]:focus,
+.setting-group input[type="password"]:focus,
 .setting-group select:focus,
 .setting-group textarea:focus {
     outline: none;

@@ -150,6 +150,7 @@ def init_crawl_tables():
             cursor.execute('ALTER TABLE crawled_urls ADD COLUMN link_score INTEGER')
         except sqlite3.OperationalError:
             pass  # Column already exists
+
         # Migration: Moz metrics, set after the crawl
         for column, column_type in moz.METRICS.values():
             try:

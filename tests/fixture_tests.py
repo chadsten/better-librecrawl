@@ -1136,6 +1136,8 @@ def test_open_pagerank_failures():
         a.shutdown()
         fake.shutdown()
         silent.close()
+
+
 # Error objects as the Moz API documents them (https://moz.com/api/docs/guides/error-handling)
 MOZ_QUOTA_ERROR = (403, {
     'code': -32670, 'status': 403,
