@@ -162,7 +162,8 @@ class LinkManager:
                     'is_internal': is_internal,
                     'target_domain': parsed_target.netloc,
                     'target_status': target_status,
-                    'placement': placement
+                    'placement': placement,
+                    'nofollow': 'nofollow' in (token.lower() for token in link.get('rel') or [])
                 }
 
                 # Track source page for this URL (for "Linked From" feature)

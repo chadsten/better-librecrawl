@@ -826,11 +826,12 @@ def page(title, description='', h1='', head=''):
 
 def test_duplicate_titles_descriptions_h1s():
     """Indexable pages sharing a title, meta description or H1 are flagged;
-    noindexed and canonicalised pages are left out, as Screaming Frog does."""
+    noindexed, canonicalised and redirecting URLs are left out, as Screaming Frog does."""
     site = BASE_PORT + 20
-    paths = ['/a', '/b', '/c', '/noindex', '/canon', '/self', '/self2']
+    paths = ['/a', '/b', '/c', '/noindex', '/canon', '/self', '/self2', '/moved']
     a = serve(make_handler({
         '/': html(''.join(f'<a href="{p}">{p}</a>' for p in paths)),
+        '/moved': (301, '/a'),
         '/a': page('Retaining Walls Houston', 'Shared description', 'Walls'),
         '/b': page('  retaining walls   HOUSTON ', 'Description B', 'walls'),
         '/c': page('Unique title', 'Shared description', 'Other'),
@@ -894,6 +895,76 @@ def test_list_mode():
             ['example.com/a', ' ', 'https://example.com/a', 'ftp://x.test/', 'http://b.test/'])
             == ['https://example.com/a', 'http://b.test/'])
         result('an empty list is refused', new_crawler().start_list_crawl(['', ' '])[0] is False)
+    finally:
+        a.shutdown()
+
+
+def test_link_score_rules():
+    """Link Score follows Screaming Frog's documented rules."""
+    from src.core.link_score import link_scores
+
+    def row(path, **extra):
+        return {'url': f'http://s.test{path}', 'status_code': 200, 'content_type': 'text/html',
+                'is_internal': True, **extra}
+
+    def edge(source, target, **extra):
+        return {'source_url': f'http://s.test{source}', 'target_url': f'http://s.test{target}',
+                'is_internal': True, 'placement': 'body', **extra}
+
+    def scores(rows, links):
+        return {url.replace('http://s.test', ''): score for url, score in link_scores(rows, links).items()}
+
+    got = scores([row(p) for p in ('/', '/a', '/b')],
+                 [edge('/', '/a'), edge('/', '/b'), edge('/a', '/'), edge('/b', '/')])
+    result('the most linked page scores 100 and the least scores 1',
+           got == {'/': 100, '/a': 1, '/b': 1}, str(got))
+
+    # /p and /x start level; /a gets half of /p (its nofollow sibling keeps the other half)
+    got = scores([row(p) for p in ('/p', '/a', '/b', '/x', '/d', '/e')],
+                 [edge('/p', '/a'), edge('/p', '/b', nofollow=True), edge('/x', '/d'), edge('/x', '/e')])
+    result('a nofollow link takes its share but passes nothing',
+           got['/a'] == got['/d'] == got['/e'] > got['/b'] == 1, str(got))
+
+    got = scores([row('/'), row('/old', redirected_to='http://s.test/new'), row('/new'),
+                  row('/dupe', canonical_url='/target'), row('/target'),
+                  row('/old2', redirected_to='http://s.test/new2')],
+                 [edge('/', '/old'), edge('/', '/dupe'), edge('/', '/old2')])
+    result('redirects and canonicals pass their links on and get no score of their own',
+           '/old' not in got and '/dupe' not in got and got['/new'] == got['/target'] > got['/'],
+           str(got))
+    result('a redirect whose target has no row of its own shows the target\'s score',
+           got.get('/old2') == got['/new'], str(got))
+
+    # /r is the control: two plain links, so /a and /b match /d only if nothing else dilutes /
+    got = scores([row(p) for p in ('/', '/a', '/b', '/c', '/r', '/d', '/e')]
+                 + [row('/n', robots='noindex, nofollow')],
+                 [edge('/', '/a'), edge('/', '/a'), edge('/', '/'), edge('/', '/b'),
+                  edge('/', '/img.png', placement='image'),
+                  {**edge('/', '/x'), 'target_url': 'http://other.test/x', 'is_internal': False},
+                  edge('/r', '/d'), edge('/r', '/e'), edge('/n', '/c')])
+    result('repeat links and self-links count once; image and external links are left out',
+           got['/a'] == got['/b'] == got['/d'] > got['/'], str(got))
+    result('a page-level nofollow passes nothing', got['/c'] == 1, str(got))
+
+
+def test_link_score_after_crawl():
+    """Pages get a Link Score when the crawl ends, and rel=nofollow is recorded on links."""
+    site = BASE_PORT + 22
+    a = serve(make_handler({
+        '/': html('<a href="/a">a</a><a href="/b" rel="nofollow noopener">b</a><img src="/i.png">'),
+        '/a': html('<a href="/">home</a>'),
+        '/b': html('<p>b</p>'),
+        '/i.png': png(),
+    }), site)
+    try:
+        crawler = crawl(f'http://127.0.0.1:{site}/')
+        got = {r['url'].rsplit('/', 1)[-1] or '/': r.get('link_score') for r in crawler.crawl_results}
+        result('crawled pages are scored and the image is not',
+               got == {'/': 100, 'a': got['a'], 'b': 1, 'i.png': None} and 1 < got['a'] < 100, str(got))
+        nofollow = {l['target_url'].rsplit('/', 1)[-1]: l.get('nofollow') for l in crawler.link_manager.all_links
+                    if l['source_url'].endswith(f'{site}/')}
+        result('rel="nofollow" is recorded on the link', nofollow == {'a': False, 'b': True, 'i.png': None},
+               str(nofollow))
     finally:
         a.shutdown()
 
@@ -971,6 +1042,8 @@ TESTS = (
     test_page_fetch_is_one_request,
     test_duplicate_titles_descriptions_h1s,
     test_list_mode,
+    test_link_score_rules,
+    test_link_score_after_crawl,
     test_new_fields_survive_the_database,
     test_post_crawl_updates_reach_the_database,
 )

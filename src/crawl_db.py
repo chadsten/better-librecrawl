@@ -144,6 +144,12 @@ def init_crawl_tables():
             except sqlite3.OperationalError:
                 pass  # Column already exists
 
+        # Migration: Link Score, set once the crawl ends
+        try:
+            cursor.execute('ALTER TABLE crawled_urls ADD COLUMN link_score INTEGER')
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
         # Links table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS crawl_links (
@@ -164,6 +170,12 @@ def init_crawl_tables():
                 FOREIGN KEY (crawl_id) REFERENCES crawls(id) ON DELETE CASCADE
             )
         ''')
+
+        # Migration: rel="nofollow" on the link
+        try:
+            cursor.execute('ALTER TABLE crawl_links ADD COLUMN nofollow BOOLEAN DEFAULT 0')
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
         # Issues table
         cursor.execute('''
@@ -390,15 +402,16 @@ def save_links_batch(crawl_id, links):
                     link.get('is_internal'),
                     link.get('target_domain'),
                     link.get('target_status'),
-                    link.get('placement', 'body')
+                    link.get('placement', 'body'),
+                    link.get('nofollow', False)
                 )
                 rows.append(row)
 
             cursor.executemany('''
                 INSERT INTO crawl_links (
                     crawl_id, source_url, target_url, anchor_text,
-                    is_internal, target_domain, target_status, placement
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    is_internal, target_domain, target_status, placement, nofollow
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', rows)
 
             print(f"Saved {len(links)} links to database for crawl {crawl_id}")

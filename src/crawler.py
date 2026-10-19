@@ -107,6 +107,7 @@ from src.core.link_manager import LinkManager
 from src.core.js_renderer import JavaScriptRenderer
 from src.core.sitemap_parser import SitemapParser
 from src.core.issue_detector import IssueDetector
+from src.core.link_score import link_scores
 from src.core.memory_monitor import MemoryMonitor
 from src.core.memory_profiler import UserMemoryTracker
 from src.core.event_log import CrawlEventLog
@@ -1470,7 +1471,19 @@ class WebCrawler:
             self.is_running_pagespeed = False
 
         self._update_all_linked_from()
+        self._update_link_scores()
         self._run_whole_crawl_checks()
+
+    def _update_link_scores(self):
+        """Give internal pages their Link Score once every link is known"""
+        scores = link_scores(self.crawl_results, self.link_manager.all_links)
+        updated = []
+        for result in self.crawl_results:
+            score = scores.get(result['url'])
+            if score != result.get('link_score'):
+                result['link_score'] = score
+                updated.append(result)
+        self._publish_url_updates(updated, ('link_score',))
 
     def _publish_url_updates(self, results, fields):
         """Send fields set on result rows after they were crawled to the UI and the saved crawl.

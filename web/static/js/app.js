@@ -2432,6 +2432,7 @@ const OVERVIEW_COLUMNS = [
     { value: d => Object.keys(d.og_tags || {}).length, text: countText('tags') },
     { value: d => (d.json_ld || []).length, text: countText('scripts') },
     { value: d => d.internal_links || 0, text: (count, d) => `${count}/${d.external_links || 0}` },
+    { value: d => d.link_score ?? '' },
     { value: d => (d.images || []).length, text: countText('images') },
     { value: d => (d.javascript_rendered ? 1 : 0), text: rendered => (rendered ? '✅ JS' : '') },
     { cell: detailsButtonCell }

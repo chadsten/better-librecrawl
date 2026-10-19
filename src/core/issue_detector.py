@@ -63,6 +63,30 @@ def robots_directives(value):
     return directives
 
 
+def page_robots_directives(result):
+    """Robots directives a page sets in its meta robots tag or X-Robots-Tag header"""
+    return robots_directives(result.get('robots')) | robots_directives(result.get('x_robots_tag'))
+
+
+def is_internal_html_page(result):
+    """An internal page that loaded (2xx) and is HTML"""
+    status = result.get('status_code') or 0
+    content_type = (result.get('content_type') or '').lower()
+    return (bool(result.get('url')) and bool(result.get('is_internal')) and 200 <= status < 300
+            and (not content_type or 'html' in content_type))
+
+
+def canonical_elsewhere(result):
+    """The URL a page's canonical points to, or None when it's missing or self-referencing"""
+    canonical = result.get('canonical_url')
+    if not canonical:
+        return None
+    url = result['url']
+    landed = result.get('redirected_to') or url
+    target = normalize_url(urljoin(landed, canonical))
+    return None if target in (normalize_url(url), normalize_url(landed)) else target
+
+
 class IssueDetector:
     """Detects SEO and technical issues in crawled pages"""
 
@@ -514,25 +538,12 @@ class IssueDetector:
             self.detected_issues.extend(issues)
 
     def _is_indexable_page(self, result):
-        """An internal HTML page that loaded, isn't noindex and doesn't
-        canonicalise to a different URL"""
-        url = result.get('url', '')
-        status = result.get('status_code') or 0
-        if not url or not result.get('is_internal') or not 200 <= status < 300:
-            return False
-        content_type = (result.get('content_type') or '').lower()
-        if (content_type and 'html' not in content_type) or self._should_exclude(url):
-            return False
-        directives = robots_directives(result.get('robots')) | robots_directives(result.get('x_robots_tag'))
-        if 'noindex' in directives:
-            return False
-
-        canonical = result.get('canonical_url')
-        if canonical:
-            landed = result.get('redirected_to') or url
-            if normalize_url(urljoin(landed, canonical)) not in (normalize_url(url), normalize_url(landed)):
-                return False
-        return True
+        """An internal HTML page that loaded without redirecting, isn't noindex
+        and doesn't canonicalise to a different URL"""
+        return (is_internal_html_page(result) and not result.get('redirected_to')
+                and not self._should_exclude(result['url'])
+                and 'noindex' not in page_robots_directives(result)
+                and canonical_elsewhere(result) is None)
 
     def detect_duplication_issues(self, all_results, similarity_threshold=0.85):
         """
