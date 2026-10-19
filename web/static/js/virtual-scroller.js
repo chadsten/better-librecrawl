@@ -7,18 +7,33 @@
  * measures what actually got painted and adapts its estimate. That keeps
  * the spacer math (and therefore the scrollbar) from drifting away from
  * reality on long lists.
+ *
+ * Columns are defined once per table, in header order. A column's value(row)
+ * feeds both its cell and click-to-sort; text(value, row) formats it for
+ * display and cell(row) draws a custom cell instead. A column without value()
+ * is not sortable.
  */
+
+// Numbers sort as numbers ("9" before "10") and text ignores case
+const SORT_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+function compareSortValues(a, b) {
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    return SORT_COLLATOR.compare(String(a ?? ''), String(b ?? ''));
+}
 
 class VirtualScroller {
     constructor(container, options = {}) {
         this.container = container;
         this.tableBody = container.querySelector('tbody');
-        this.data = [];
+        this.source = []; // rows in arrival (crawl) order
+        this.data = this.source; // rows as displayed: source, or a sorted copy of it
 
         // Configuration
         this.rowHeight = options.rowHeight || 40; // px per row (adaptive estimate)
         this.buffer = options.buffer || 10; // extra rows to render above/below viewport
-        this.renderRow = options.renderRow || this.defaultRenderRow.bind(this);
+        this.columns = options.columns;
+        this.decorateRow = options.decorateRow;
 
         // State
         this.scrollTop = 0;
@@ -27,9 +42,12 @@ class VirtualScroller {
         this.visibleEnd = -1;
         this.renderedLength = -1;
         this.rafPending = false;
+        this.sort = null; // { index, direction: 1 | -1 } while a column is sorted
+        this.sortPending = false;
 
         // Create virtual scrolling structure
         this.setupVirtualScroll();
+        this.setupSortableHeaders();
 
         // Bind scroll handler (rAF-throttled so fast scrolling doesn't
         // rebuild the DOM more than once per frame)
@@ -64,6 +82,59 @@ class VirtualScroller {
         this.container.style.position = 'relative';
     }
 
+    setupSortableHeaders() {
+        this.headers = Array.from(this.tableBody.parentElement.querySelectorAll('thead th'));
+        this.headers.forEach((th, index) => {
+            if (!this.columns[index]?.value) return;
+            th.classList.add('sortable');
+            th.addEventListener('click', (event) => {
+                // a click on the resize grip is a resize, not a sort
+                if (event.target.closest('.column-resize-grip')) return;
+                this.toggleSort(index);
+            });
+        });
+    }
+
+    // Each click on a header steps it through ascending, descending, then
+    // back to crawl order
+    toggleSort(index) {
+        if (!this.sort || this.sort.index !== index) {
+            this.sort = { index, direction: 1 };
+        } else if (this.sort.direction === 1) {
+            this.sort.direction = -1;
+        } else {
+            this.sort = null;
+        }
+
+        this.headers.forEach((th, i) => {
+            if (this.sort && i === this.sort.index) {
+                th.setAttribute('aria-sort', this.sort.direction === 1 ? 'ascending' : 'descending');
+            } else {
+                th.removeAttribute('aria-sort');
+            }
+        });
+
+        this.container.scrollTop = 0;
+        this.scrollTop = 0;
+        this.applySort();
+        this.visibleStart = -1;
+        this.render();
+    }
+
+    applySort() {
+        if (!this.sort) {
+            this.data = this.source;
+            return;
+        }
+        // Read each row's value once, then sort (stable, so ties keep crawl order)
+        const { value } = this.columns[this.sort.index];
+        const direction = this.sort.direction;
+        this.data = this.source
+            .map(row => ({ row, key: value(row) }))
+            .sort((a, b) => direction * compareSortValues(a.key, b.key))
+            .map(entry => entry.row);
+    }
+
     createSpacer(columnCount) {
         const row = document.createElement('tr');
         const cell = document.createElement('td');
@@ -77,7 +148,9 @@ class VirtualScroller {
     }
 
     setData(data) {
-        this.data = data;
+        this.source = data;
+        this.sortPending = false;
+        this.applySort();
         // Force a full re-render and clamp the scroll position in case the
         // new data is shorter than where the user had scrolled to
         this.visibleStart = -1;
@@ -94,8 +167,14 @@ class VirtualScroller {
     }
 
     appendData(newData) {
-        this.data.push(...newData);
-        this.render();
+        this.source.push(...newData);
+        if (this.sort) {
+            // Re-sort at most once per frame, however many rows stream in
+            this.sortPending = true;
+            this.scheduleRender();
+        } else {
+            this.render();
+        }
     }
 
     handleScroll() {
@@ -125,6 +204,12 @@ class VirtualScroller {
     }
 
     render() {
+        if (this.sortPending) {
+            this.sortPending = false;
+            this.applySort();
+            this.visibleStart = -1; // rows may have moved within the window
+        }
+
         const total = this.data.length;
 
         if (!this.containerHeight) {
@@ -197,34 +282,26 @@ class VirtualScroller {
         const row = document.createElement('tr');
         row.dataset.index = index;
 
-        // Use custom render function
-        this.renderRow(row, rowData, index);
+        for (const column of this.columns) {
+            if (column.cell) {
+                row.appendChild(column.cell(rowData));
+                continue;
+            }
+            // textContent, so crawled-page content can never inject markup
+            const cell = document.createElement('td');
+            const value = column.value(rowData);
+            cell.textContent = column.text ? column.text(value, rowData) : (value ?? '');
+            row.appendChild(cell);
+        }
 
+        if (this.decorateRow) this.decorateRow(row, rowData);
         return row;
     }
 
-    defaultRenderRow(row, rowData, index) {
-        // Default: assume rowData is array of cell values
-        if (Array.isArray(rowData)) {
-            rowData.forEach(cellData => {
-                const cell = document.createElement('td');
-                if (typeof cellData === 'string' && cellData.includes('<button')) {
-                    cell.innerHTML = cellData;
-                } else {
-                    cell.textContent = cellData;
-                }
-                row.appendChild(cell);
-            });
-        } else {
-            // Single cell with stringified data
-            const cell = document.createElement('td');
-            cell.textContent = JSON.stringify(rowData);
-            row.appendChild(cell);
-        }
-    }
-
     clear() {
-        this.data = [];
+        this.source = [];
+        this.data = this.source;
+        this.sortPending = false;
         this.visibleStart = -1;
         this.visibleEnd = -1;
         this.renderedLength = 0;

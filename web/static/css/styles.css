@@ -458,6 +458,24 @@ body {
     text-overflow: ellipsis;
 }
 
+/* Click-to-sort headers (see virtual-scroller.js) */
+.data-table th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+
+.data-table th.sortable:hover {
+    color: #c4b5fd;
+}
+
+.data-table th[aria-sort="ascending"]::after {
+    content: ' \25B2'; /* ▲ */
+}
+
+.data-table th[aria-sort="descending"]::after {
+    content: ' \25BC'; /* ▼ */
+}
+
 /* The first column (the URL) stays pinned while scrolling sideways. Spacer
    rows from the virtual scroller span every column, so they're left alone. */
 .data-table th:first-child,

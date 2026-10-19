@@ -90,6 +90,14 @@ class ColumnResizer {
     }
 
     onMouseUp() {
+        if (this.activeColumn) {
+            // Releasing a drag still fires a click on the header; swallow it
+            // so a resize doesn't also sort the column
+            const swallow = (event) => event.stopPropagation();
+            window.addEventListener('click', swallow, true);
+            setTimeout(() => window.removeEventListener('click', swallow, true), 0);
+        }
+
         if (this.activeGrip) {
             this.activeGrip.style.background = 'transparent';
         }

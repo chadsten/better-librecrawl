@@ -747,7 +747,7 @@ function initializeVirtualScrollers() {
             virtualScrollers.overview = new VirtualScroller(overviewContainer, {
                 rowHeight: 100,
                 buffer: 25,
-                renderRow: renderOverviewRow
+                columns: OVERVIEW_COLUMNS
             });
             console.log('Overview virtual scroller initialized');
         }
@@ -758,7 +758,7 @@ function initializeVirtualScrollers() {
             virtualScrollers.internal = new VirtualScroller(internalContainer, {
                 rowHeight: 80,
                 buffer: 25,
-                renderRow: renderInternalRow
+                columns: URL_COLUMNS
             });
             console.log('Internal virtual scroller initialized');
         }
@@ -769,7 +769,7 @@ function initializeVirtualScrollers() {
             virtualScrollers.external = new VirtualScroller(externalContainer, {
                 rowHeight: 80,
                 buffer: 25,
-                renderRow: renderExternalRow
+                columns: URL_COLUMNS
             });
             console.log('External virtual scroller initialized');
         }
@@ -780,7 +780,7 @@ function initializeVirtualScrollers() {
             virtualScrollers.internalLinks = new VirtualScroller(internalLinksContainer, {
                 rowHeight: 80,
                 buffer: 25,
-                renderRow: renderInternalLinkRow
+                columns: INTERNAL_LINK_COLUMNS
             });
             console.log('Internal links virtual scroller initialized');
         }
@@ -791,7 +791,7 @@ function initializeVirtualScrollers() {
             virtualScrollers.externalLinks = new VirtualScroller(externalLinksContainer, {
                 rowHeight: 80,
                 buffer: 25,
-                renderRow: renderExternalLinkRow
+                columns: EXTERNAL_LINK_COLUMNS
             });
             console.log('External links virtual scroller initialized');
         }
@@ -802,7 +802,8 @@ function initializeVirtualScrollers() {
             virtualScrollers.issues = new VirtualScroller(issuesContainer, {
                 rowHeight: 80,
                 buffer: 25,
-                renderRow: renderIssueRow
+                columns: ISSUE_COLUMNS,
+                decorateRow: decorateIssueRow
             });
             console.log('Issues virtual scroller initialized');
         }
@@ -2324,88 +2325,50 @@ function loadCrawl() {
 }
 
 // ========================================
-// Virtual Scroller Render Functions
+// Table Columns
 // ========================================
+// One entry per column, in the same order as the table's headers in
+// index.html. value() feeds both the cell and click-to-sort, text() formats
+// it for display, and cell() draws a custom cell (see virtual-scroller.js).
 
-function renderOverviewRow(row, urlData, index) {
-    const analyticsInfo = formatAnalyticsInfo(urlData.analytics || {});
-    const ogTagsCount = Object.keys(urlData.og_tags || {}).length;
-    const jsonLdCount = (urlData.json_ld || []).length;
-    const linksInfo = `${urlData.internal_links || 0}/${urlData.external_links || 0}`;
-    const imagesCount = (urlData.images || []).length;
-    const jsRendered = urlData.javascript_rendered ? '✅ JS' : '';
+const countText = noun => count => (count > 0 ? `${count} ${noun}` : '');
 
-    const keywordsInfo = urlData.keywords || '';
-
-    const cells = [
-        urlData.url,
-        urlData.status_code,
-        urlData.title || '',
-        urlData.meta_description || '',
-        urlData.h1 || '',
-        keywordsInfo,
-        urlData.word_count || 0,
-        urlData.response_time || 0,
-        analyticsInfo,
-        ogTagsCount > 0 ? `${ogTagsCount} tags` : '',
-        jsonLdCount > 0 ? `${jsonLdCount} scripts` : '',
-        linksInfo,
-        imagesCount > 0 ? `${imagesCount} images` : '',
-        jsRendered,
-        `<button class="details-btn" onclick="showUrlDetails('${urlData.url.replace(/'/g, "\\'")}')">📊 Details</button>`
-    ];
-
-    cells.forEach(cellData => {
-        const cell = document.createElement('td');
-        if (typeof cellData === 'string' && cellData.includes('<button')) {
-            cell.innerHTML = cellData;
-        } else {
-            cell.textContent = cellData;
-        }
-        row.appendChild(cell);
-    });
-}
-
-function renderInternalRow(row, urlData, index) {
-    const cells = [
-        urlData.url,
-        urlData.status_code,
-        urlData.content_type || '',
-        urlData.size || 0,
-        urlData.title || ''
-    ];
-
-    cells.forEach(cellData => {
-        const cell = document.createElement('td');
-        cell.textContent = cellData;
-        row.appendChild(cell);
-    });
-}
-
-function renderExternalRow(row, urlData, index) {
-    const cells = [
-        urlData.url,
-        urlData.status_code,
-        urlData.content_type || '',
-        urlData.size || 0,
-        urlData.title || ''
-    ];
-
-    cells.forEach(cellData => {
-        const cell = document.createElement('td');
-        cell.textContent = cellData;
-        row.appendChild(cell);
-    });
-}
-
-// Build a <td> with text set via textContent so crawled-page content
-// (anchor text, URLs, issue details) can never inject markup
-function makeTextCell(text, wordBreak) {
+function detailsButtonCell(urlData) {
     const cell = document.createElement('td');
-    if (wordBreak) cell.style.wordBreak = wordBreak;
-    cell.textContent = text;
+    const button = document.createElement('button');
+    button.className = 'details-btn';
+    button.textContent = '📊 Details';
+    button.addEventListener('click', () => showUrlDetails(urlData.url));
+    cell.appendChild(button);
     return cell;
 }
+
+const OVERVIEW_COLUMNS = [
+    { value: d => d.url },
+    { value: d => d.status_code ?? 0 },
+    { value: d => d.title || '' },
+    { value: d => d.meta_description || '' },
+    { value: d => d.h1 || '' },
+    { value: d => d.keywords || '' },
+    { value: d => d.word_count || 0 },
+    { value: d => d.response_time || 0 },
+    { value: d => formatAnalyticsInfo(d.analytics || {}) },
+    { value: d => Object.keys(d.og_tags || {}).length, text: countText('tags') },
+    { value: d => (d.json_ld || []).length, text: countText('scripts') },
+    { value: d => d.internal_links || 0, text: (count, d) => `${count}/${d.external_links || 0}` },
+    { value: d => (d.images || []).length, text: countText('images') },
+    { value: d => (d.javascript_rendered ? 1 : 0), text: rendered => (rendered ? '✅ JS' : '') },
+    { cell: detailsButtonCell }
+];
+
+// Internal and External tabs
+const URL_COLUMNS = [
+    { value: d => d.url },
+    { value: d => d.status_code ?? 0 },
+    { value: d => d.content_type || '' },
+    { value: d => d.size || 0 },
+    { value: d => d.title || '' }
+];
 
 function makeStatusBadgeCell(targetStatus) {
     const cell = document.createElement('td');
@@ -2418,61 +2381,58 @@ function makeStatusBadgeCell(targetStatus) {
     return cell;
 }
 
-function renderInternalLinkRow(row, link, index) {
-    const placement = link.placement ? link.placement.charAt(0).toUpperCase() + link.placement.slice(1) : 'Unknown';
+const linkPlacement = link =>
+    (link.placement ? link.placement.charAt(0).toUpperCase() + link.placement.slice(1) : 'Unknown');
 
-    row.appendChild(makeTextCell(link.source_url, 'break-all'));
-    row.appendChild(makeTextCell(link.target_url, 'break-all'));
-    row.appendChild(makeStatusBadgeCell(link.target_status));
-    row.appendChild(makeTextCell(link.anchor_text || ''));
-    row.appendChild(makeTextCell(placement));
-}
+const LINK_STATUS_COLUMN = {
+    value: link => link.target_status || 0,
+    cell: link => makeStatusBadgeCell(link.target_status)
+};
 
-function renderExternalLinkRow(row, link, index) {
-    const placement = link.placement ? link.placement.charAt(0).toUpperCase() + link.placement.slice(1) : 'Unknown';
+const INTERNAL_LINK_COLUMNS = [
+    { value: link => link.source_url },
+    { value: link => link.target_url },
+    LINK_STATUS_COLUMN,
+    { value: link => link.anchor_text || '' },
+    { value: linkPlacement }
+];
 
-    row.appendChild(makeTextCell(link.source_url, 'break-all'));
-    row.appendChild(makeTextCell(link.target_url, 'break-all'));
-    row.appendChild(makeStatusBadgeCell(link.target_status));
-    row.appendChild(makeTextCell(link.target_domain || ''));
-    row.appendChild(makeTextCell(placement));
-}
+const EXTERNAL_LINK_COLUMNS = [
+    { value: link => link.source_url },
+    { value: link => link.target_url },
+    LINK_STATUS_COLUMN,
+    { value: link => link.target_domain || '' },
+    { value: linkPlacement }
+];
 
-function renderIssueRow(row, issue, index) {
-    row.setAttribute('data-issue-type', issue.type);
+// Issue severities, in sort order (anything unrecognised shows as info)
+const ISSUE_TYPES = {
+    error:   { rank: 0, icon: '❌', color: '#ef4444', tint: 'rgba(239, 68, 68, 0.1)' },
+    warning: { rank: 1, icon: '⚠️', color: '#f59e0b', tint: 'rgba(245, 158, 11, 0.1)' },
+    info:    { rank: 2, icon: 'ℹ️', color: '#3b82f6', tint: 'rgba(59, 130, 246, 0.1)' }
+};
 
-    // Tint the row by issue type (the pinned URL cell reads --row-tint too)
-    let typeIcon, typeColor;
-    if (issue.type === 'error') {
-        row.style.setProperty('--row-tint', 'rgba(239, 68, 68, 0.1)');
-        typeIcon = '❌';
-        typeColor = '#ef4444';
-    } else if (issue.type === 'warning') {
-        row.style.setProperty('--row-tint', 'rgba(245, 158, 11, 0.1)');
-        typeIcon = '⚠️';
-        typeColor = '#f59e0b';
-    } else {
-        row.style.setProperty('--row-tint', 'rgba(59, 130, 246, 0.1)');
-        typeIcon = 'ℹ️';
-        typeColor = '#3b82f6';
-    }
+const issueType = issue => ISSUE_TYPES[issue.type] || ISSUE_TYPES.info;
 
-    const urlCell = makeTextCell(issue.url, 'break-all');
-    urlCell.title = issue.url;
-    row.appendChild(urlCell);
-
-    const typeCell = document.createElement('td');
+function issueTypeCell(issue) {
+    const cell = document.createElement('td');
     const icon = document.createElement('span');
-    icon.style.color = typeColor;
-    icon.textContent = typeIcon;
-    typeCell.appendChild(icon);
-    typeCell.appendChild(document.createTextNode(' ' + issue.type));
-    row.appendChild(typeCell);
+    icon.style.color = issueType(issue).color;
+    icon.textContent = issueType(issue).icon;
+    cell.appendChild(icon);
+    cell.appendChild(document.createTextNode(' ' + issue.type));
+    return cell;
+}
 
-    row.appendChild(makeTextCell(issue.category));
-    row.appendChild(makeTextCell(issue.issue));
+const ISSUE_COLUMNS = [
+    { value: issue => issue.url },
+    { value: issue => issueType(issue).rank, cell: issueTypeCell },
+    { value: issue => issue.category },
+    { value: issue => issue.issue },
+    { value: issue => issue.details }
+];
 
-    const detailsCell = makeTextCell(issue.details, 'break-word');
-    detailsCell.title = issue.details;
-    row.appendChild(detailsCell);
+// Tint the row by issue type (the pinned URL cell reads --row-tint too)
+function decorateIssueRow(row, issue) {
+    row.style.setProperty('--row-tint', issueType(issue).tint);
 }
