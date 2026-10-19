@@ -954,7 +954,7 @@ def test_link_score_rules():
 
 def test_link_score_after_crawl():
     """Pages get a Link Score when the crawl ends, and rel=nofollow is recorded on links."""
-    site = BASE_PORT + 22
+    site = BASE_PORT + 28
     a = serve(make_handler({
         '/': html('<a href="/a">a</a><a href="/b" rel="nofollow noopener">b</a><img src="/i.png">'),
         '/a': html('<a href="/">home</a>'),
