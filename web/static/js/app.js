@@ -652,6 +652,22 @@ function updateStatsDisplay() {
     document.getElementById('crawledCount').textContent = crawlState.stats.crawled;
     document.getElementById('crawlDepth').textContent = crawlState.stats.depth;
     document.getElementById('crawlSpeed').textContent = crawlState.stats.speed + ' URLs/sec';
+
+    // Looked up once at the end of a crawl, when an Open PageRank API key is set
+    const opr = crawlState.stats.open_pagerank;
+    document.getElementById('openPageRankItem').style.display = opr ? '' : 'none';
+    if (!opr) return;
+    const oprValue = document.getElementById('openPageRank');
+    if (opr.error) {
+        oprValue.textContent = opr.error;
+        oprValue.title = '';
+    } else if (opr.open_page_rank === null) {
+        oprValue.textContent = 'Not found';
+        oprValue.title = `${opr.domain} is not in the Open PageRank data`;
+    } else {
+        oprValue.textContent = opr.open_page_rank + (opr.rank ? ` (#${opr.rank.toLocaleString()})` : '');
+        oprValue.title = `${opr.domain}: score out of 10 and global rank, data as of ${opr.as_of}`;
+    }
 }
 
 function updateMemoryDisplay(memoryData, memoryDataSizes) {

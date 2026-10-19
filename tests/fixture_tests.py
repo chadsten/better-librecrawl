@@ -57,9 +57,11 @@ def png():
     return b'\x89PNG\r\n\x1a\n' + b'x' * 40
 
 
-def make_handler(routes, hits=None, slow_paths=(), slow_seconds=0.0):
+def make_handler(routes, hits=None, slow_paths=(), slow_seconds=0.0, received=None):
     """Build a handler serving `routes`: path -> html str, bytes, (code, location),
-    or {'status', 'body', 'headers'} for a page with its own status or headers."""
+    or {'status', 'body', 'headers'} for a page with its own status or headers.
+    POSTs are served the same routes; `received` collects every request's
+    path, headers and body."""
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
@@ -74,12 +76,15 @@ def make_handler(routes, hits=None, slow_paths=(), slow_seconds=0.0):
                 self.send_header(name, value)
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
-            if body and self.command == 'GET':
+            if body and self.command != 'HEAD':
                 self.wfile.write(body)
 
         def do_GET(self):
             if hits is not None:
                 hits.append(f'{self.command} {self.path}')
+            body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+            if received is not None:
+                received.append({'path': self.path, 'headers': self.headers, 'body': body})
             if any(self.path.startswith(p) for p in slow_paths):
                 time.sleep(slow_seconds)
 
@@ -100,7 +105,7 @@ def make_handler(routes, hits=None, slow_paths=(), slow_seconds=0.0):
             else:
                 self._send(200, route.encode())
 
-        do_HEAD = do_GET
+        do_HEAD = do_POST = do_GET
 
     return Handler
 
@@ -943,6 +948,122 @@ def test_post_crawl_updates_reach_the_database():
                str(row.get('linked_from')))
 
 
+@contextmanager
+def open_pagerank_api(url):
+    """Point the Open PageRank client at a fake API, with a short timeout"""
+    from src.integrations import open_pagerank
+
+    original = open_pagerank.BASE_URL, open_pagerank.TIMEOUT
+    open_pagerank.BASE_URL, open_pagerank.TIMEOUT = url, 1
+    try:
+        yield
+    finally:
+        open_pagerank.BASE_URL, open_pagerank.TIMEOUT = original
+
+
+def test_open_pagerank_lookup():
+    """With a key set, the crawled site gets one Open PageRank lookup when the
+    crawl ends, and the result reaches the stats the UI polls."""
+    import json
+
+    site, api = BASE_PORT + 22, BASE_PORT + 23
+    # The documented /v1/domains/bulk example, for one domain without history
+    documented = {'as_of': '2026-06-01', 'count': 1, 'invalid': [], 'results': [
+        {'domain': 'github.com', 'found': True, 'open_page_rank': 9.67, 'rank': 30,
+         'referring_domains': 282833}]}
+    received = []
+    a = serve(make_handler({'/': html('<a href="/p">p</a>'), '/p': html('<p>p</p>')}), site)
+    fake = serve(make_handler({'/v1/domains/bulk': {'body': json.dumps(documented)}},
+                              received=received), api)
+    try:
+        with open_pagerank_api(f'http://127.0.0.1:{api}'):
+            crawler = crawl(f'http://127.0.0.1:{site}/', open_pagerank_api_key='opr_live_test')
+            result('one lookup per crawl', [r['path'] for r in received] == ['/v1/domains/bulk'],
+                   str([r['path'] for r in received]))
+            sent = received[0]
+            result('the key is sent as a bearer token',
+                   sent['headers']['Authorization'] == 'Bearer opr_live_test',
+                   str(sent['headers']['Authorization']))
+            result('the crawled host is sent without its port',
+                   json.loads(sent['body']) == {'domains': ['127.0.0.1'], 'include_history': False},
+                   sent['body'].decode())
+            stats = crawler.get_status_light()['stats']
+            result('the score and global rank reach the polled stats',
+                   stats.get('open_pagerank') == {'domain': 'github.com', 'open_page_rank': 9.67,
+                                                  'rank': 30, 'as_of': '2026-06-01'},
+                   str(stats.get('open_pagerank')))
+
+            crawler.load_data({'base_url': 'http://example.test', 'base_domain': 'example.test'},
+                              [], [], [])
+            result('a crawl loaded from the database does not show the last score',
+                   'open_pagerank' not in crawler.stats)
+
+            received.clear()
+            crawler = crawl(f'http://127.0.0.1:{site}/')
+            result('no lookup without a key', not received and 'open_pagerank' not in crawler.stats,
+                   str(received))
+    finally:
+        a.shutdown()
+        fake.shutdown()
+
+
+def test_open_pagerank_failures():
+    """A failed Open PageRank lookup is recorded for the UI and never fails or
+    stalls the crawl. A stopped crawl skips the lookup."""
+    import json
+    import socket
+
+    site, api, hung, closed = BASE_PORT + 24, BASE_PORT + 25, BASE_PORT + 26, BASE_PORT + 27
+    base = f'http://127.0.0.1:{site}'
+    a = serve(make_handler({'/': html('<p>home</p>'), '/slow': html('<p>slow</p>')},
+                           slow_paths=('/slow',), slow_seconds=1), site)
+    routes, received = {}, []
+    fake = serve(make_handler(routes, received=received), api)
+    # Accepts connections but never answers
+    silent = socket.socket()
+    silent.bind(('127.0.0.1', hung))
+    silent.listen()
+
+    def outcome(api_port):
+        with open_pagerank_api(f'http://127.0.0.1:{api_port}'):
+            crawler = crawl(f'{base}/', open_pagerank_api_key='opr_live_test')
+        return crawler.get_status_light()['status'], crawler.stats.get('open_pagerank')
+
+    try:
+        routes['/v1/domains/bulk'] = {'status': 401, 'body': json.dumps({'error': {
+            'type': 'authentication_error', 'message': 'Missing or invalid Open Page Rank API key.'}})}
+        got = outcome(api)
+        result('an API error is recorded and the crawl completes',
+               got == ('completed', {'error': 'API error 401'}), str(got))
+
+        got = outcome(hung)
+        result('an API that never answers times out and the crawl completes',
+               got == ('completed', {'error': 'Timed out'}), str(got))
+
+        got = outcome(closed)
+        result('an unreachable API is recorded and the crawl completes',
+               got == ('completed', {'error': 'Lookup failed'}), str(got))
+
+        routes['/v1/domains/bulk'] = {'body': json.dumps(
+            {'as_of': '2026-06-01', 'count': 0, 'results': [], 'invalid': ['127.0.0.1']})}
+        got = outcome(api)
+        result('a host the API cannot score says so',
+               got == ('completed', {'error': 'Not a public domain'}), str(got))
+
+        received.clear()
+        with open_pagerank_api(f'http://127.0.0.1:{api}'):
+            crawler = new_crawler(open_pagerank_api_key='opr_live_test')
+            ok, message = crawler.start_crawl(f'{base}/slow')
+            assert ok, message
+            crawler.stop_crawl()
+        result('a stopped crawl skips the lookup',
+               not received and 'open_pagerank' not in crawler.stats, str(received))
+    finally:
+        a.shutdown()
+        fake.shutdown()
+        silent.close()
+
+
 def _playwright_available():
     try:
         import playwright  # noqa: F401
@@ -973,6 +1094,8 @@ TESTS = (
     test_list_mode,
     test_new_fields_survive_the_database,
     test_post_crawl_updates_reach_the_database,
+    test_open_pagerank_lookup,
+    test_open_pagerank_failures,
 )
 
 

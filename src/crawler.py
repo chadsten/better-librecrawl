@@ -110,6 +110,7 @@ from src.core.issue_detector import IssueDetector
 from src.core.memory_monitor import MemoryMonitor
 from src.core.memory_profiler import UserMemoryTracker
 from src.core.event_log import CrawlEventLog
+from src.integrations import open_pagerank
 
 
 class WebCrawler:
@@ -625,6 +626,8 @@ class WebCrawler:
             self.stats['discovered'] = crawl_data.get('urls_discovered', 0)
             self.stats['depth'] = crawl_data.get('max_depth_reached', 0)
             self.stats['start_time'] = time.time()  # New start time for resume
+            # Not saved with a crawl; looked up again when the resumed crawl ends
+            self.stats.pop('open_pagerank', None)
 
             # Restore queue state from checkpoint
             checkpoint = crawl_data.get('resume_checkpoint', {})
@@ -703,6 +706,8 @@ class WebCrawler:
         self.stats['crawled'] = len(urls)
         self.stats['discovered'] = len(urls)
         self.pages_crawled = len(urls)
+        # Not saved with a crawl; the score left here belongs to the previous one
+        self.stats.pop('open_pagerank', None)
 
         self.link_manager.all_links = links
         self.link_manager.links_set.clear()
@@ -1463,6 +1468,13 @@ class WebCrawler:
 
     def _run_post_crawl_steps(self):
         """Work that needs the whole crawl: API lookups, then cross-page analysis"""
+        # Skipped when the crawl was stopped, as PageSpeed is: a new crawl can
+        # start before a late lookup returns and would get this site's score
+        if self.is_running and self.config.get('open_pagerank_api_key'):
+            print("Looking up Open PageRank...")
+            self.stats['open_pagerank'] = open_pagerank.lookup_domain(
+                urlparse(self.base_url).hostname, self.config['open_pagerank_api_key'])
+
         if self.config.get('enable_pagespeed', False):
             print("Running PageSpeed analysis...")
             self.is_running_pagespeed = True
