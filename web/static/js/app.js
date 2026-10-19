@@ -16,6 +16,7 @@ let crawlState = {
     filters: {
         active: null,
         issueFilter: 'all',
+        issueCategory: 'all',
         linksFilter: {
             internalStatusCode: 'all',
             externalStatusCode: 'all',
@@ -1076,12 +1077,11 @@ function updateIssuesTable(issues) {
     } else {
         if (emptyState) emptyState.style.display = 'none';
         if (issuesTable) issuesTable.style.display = 'table';
-
-        // Use virtual scroller for issues
-        if (virtualScrollers.issues) {
-            virtualScrollers.issues.setData(issues);
-        }
     }
+
+    // Keep the chosen severity and category as new issues arrive
+    renderIssueCategoryFilters(issues);
+    applyIssueFilters();
 
     // Update issue count in tab button (find the button, not the tab content)
     const issuesTabButton = Array.from(document.querySelectorAll('.tab-btn')).find(btn => btn.textContent.includes('Issues'));
@@ -1288,16 +1288,42 @@ function filterIssues(filterType) {
         }
     });
 
-    // Filter issues data and update virtual scroller
-    if (window.currentIssues && virtualScrollers.issues) {
-        let filteredIssues = window.currentIssues;
+    applyIssueFilters();
+}
 
-        if (filterType !== 'all') {
-            filteredIssues = window.currentIssues.filter(issue => issue.type === filterType);
-        }
+function filterIssuesByCategory(category) {
+    crawlState.filters.issueCategory = category;
+    renderIssueCategoryFilters(window.currentIssues || []);
+    applyIssueFilters();
+}
 
-        virtualScrollers.issues.setData(filteredIssues);
+// One button per category in the crawl, most issues first, after "All categories".
+// A chosen category that no longer has issues (a new crawl) falls back to all.
+function renderIssueCategoryFilters(issues) {
+    const counts = new Map();
+    for (const issue of issues) counts.set(issue.category, (counts.get(issue.category) || 0) + 1);
+    if (!counts.has(crawlState.filters.issueCategory)) crawlState.filters.issueCategory = 'all';
+
+    const row = document.getElementById('issueCategoryFilters');
+    row.hidden = !issues.length;
+    row.innerHTML = '';
+    const categories = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    for (const [category, label, count] of [['all', 'All categories', issues.length],
+                                            ...categories.map(([name, total]) => [name, name, total])]) {
+        const button = row.appendChild(document.createElement('button'));
+        button.className = 'issue-category' + (category === crawlState.filters.issueCategory ? ' active' : '');
+        button.append(label, Object.assign(document.createElement('span'), { textContent: `(${count})` }));
+        button.onclick = () => filterIssuesByCategory(category);
     }
+}
+
+// Show the issues that match both the severity and the category filter
+function applyIssueFilters() {
+    if (!virtualScrollers.issues) return;
+    const { issueFilter, issueCategory } = crawlState.filters;
+    virtualScrollers.issues.setData((window.currentIssues || []).filter(issue =>
+        (issueFilter === 'all' || issue.type === issueFilter)
+        && (issueCategory === 'all' || issue.category === issueCategory)));
 }
 
 // Filter Management
@@ -2120,14 +2146,14 @@ function evidenceMeter(strength, max) {
     return '●'.repeat(strength) + '○'.repeat(max - strength);
 }
 
-// A text-only row; each cell's full text shows on hover, since long cells are cut off
-function addAiSearchRow(body, cells, flagged) {
+// A text-only row, tinted like an issue of type `flag` (error, warning) when it has one
+function addAiSearchRow(body, cells, flag) {
     const row = body.insertRow();
     for (const text of cells) {
         const cell = row.insertCell();
         cell.textContent = cell.title = text;
     }
-    if (flagged) row.style.setProperty('--row-tint', ISSUE_TYPES.warning.tint);
+    if (flag) row.style.setProperty('--row-tint', ISSUE_TYPES[flag].tint);
 }
 
 function displayAiSearch(report) {
@@ -2142,13 +2168,13 @@ function displayAiSearch(report) {
     document.getElementById('aiSearchSummary').textContent = aiAccessSummary(report);
     for (const bot of report.bots) {
         addAiSearchRow(bots, [bot.token, bot.used_by, bot.kind, aiBotStatus(bot, report),
-                              pageShare(bot.blocked_pages, report), bot.note], bot.flagged);
+                              pageShare(bot.blocked_pages, report), bot.note], bot.flag);
     }
 
     const max = Math.max(...report.evidence_levels.map(level => level.strength));
     for (const level of report.evidence_levels) {
         legend.appendChild(document.createElement('div')).textContent =
-            `${evidenceMeter(level.strength, max)} ${level.label}: ${level.note}`;
+            `${evidenceMeter(level.strength, max)} ${level.label} (raised as ${level.issue_type}): ${level.note}`;
     }
     for (const check of report.checks) {
         addAiSearchRow(checks, [check.check, check.group, check.value ?? pageShare(check.pages, report),
@@ -2161,9 +2187,6 @@ function displayAiSearch(report) {
 function aiSearchDetails(facts) {
     const yesNo = value => value == null ? 'N/A' : (value ? 'Yes' : 'No');
     return [
-        ['FAQ section', yesNo(facts.faq)],
-        ['Headings phrased as questions', facts.question_headings],
-        ['Lists and tables', facts.lists_tables],
         ['Words before the first subheading', facts.intro_words ?? 'N/A'],
         ['Text length', `${facts.text_chars.toLocaleString()} characters`],
         ['Hidden until clicked', `${facts.hidden_words} words`],

@@ -1486,25 +1486,15 @@ class WebCrawler:
 
     def _run_ai_search_checks(self):
         """The AI Search tab: which AI crawlers robots.txt lets reach the
-        crawled pages (raising their issues), then a tally of every AI Search check"""
+        crawled pages and whether sitemap dates are trustworthy (raising
+        their issues), then a tally of every AI Search check"""
         pages = [result for result in self.crawl_results if is_internal_html_page(result)]
         access, blocked = ai_robots_access(pages, self._robots_for, self.base_url)
         self._add_whole_crawl_issues(self.issue_detector.detect_ai_bot_issues, blocked)
         looked_for_sitemaps = self.config.get('discover_sitemaps', True) and not self.config.get('list_mode')
-        site = {'sitemap_lastmods': self.sitemap_parser.lastmods if looked_for_sitemaps else None,
-                'llms_txt': self._fetch_llms_txt()}
+        site = {'sitemap_lastmods': self.sitemap_parser.lastmods if looked_for_sitemaps else None}
+        self._add_whole_crawl_issues(self.issue_detector.detect_ai_sitemap_issues, site['sitemap_lastmods'])
         self.stats['ai_search'] = ai_search_report(access, pages, self.issue_detector.get_issues(), site)
-
-    def _fetch_llms_txt(self):
-        """The crawled site's /llms.txt: {url, status, text}, status None when the fetch failed"""
-        parsed = urlparse(self.base_url)
-        url = f"{parsed.scheme}://{parsed.netloc}/llms.txt"
-        try:
-            response = self.session.get(url, timeout=10)
-        except requests.exceptions.RequestException as e:
-            print(f"llms.txt fetch failed for {url}: {e}")
-            return {'url': url, 'status': None, 'text': ''}
-        return {'url': url, 'status': response.status_code, 'text': response.text if response.ok else ''}
 
     def _update_link_scores(self):
         """Give internal pages their Link Score once every link is known"""

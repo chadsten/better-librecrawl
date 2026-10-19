@@ -18,16 +18,15 @@ from bs4.element import Comment, NavigableString, PreformattedString
 
 from src.core.link_manager import is_same_site
 
-# How strong the case behind a check is, strongest first; strength drives the meter in the tab
+# How strong the case behind a check is, strongest first. strength drives the
+# meter in the tab, and issue_type sets how severe the check's issues are.
 EVIDENCE = {
-    'documented': {'strength': 4, 'label': 'Documented',
+    'documented': {'strength': 3, 'label': 'Documented', 'issue_type': 'error',
                    'note': 'The vendor documents that this controls whether or how its AI uses the page.'},
-    'guidance': {'strength': 3, 'label': 'Vendor guidance',
+    'guidance': {'strength': 2, 'label': 'Vendor guidance', 'issue_type': 'warning',
                  'note': "Google or Bing recommend it, but no study has shown it changes how often pages are cited."},
-    'convention': {'strength': 2, 'label': 'Tool convention',
+    'convention': {'strength': 1, 'label': 'Tool convention', 'issue_type': 'info',
                    'note': 'Common in SEO audit tools, with no vendor guidance or study behind it.'},
-    'unproven': {'strength': 1, 'label': 'No measured effect',
-                 'note': 'Recommended in some guides, but studies found no effect on how often pages are cited.'},
 }
 
 # Thresholds. Where no source is named, the number is LibreCrawl's own.
@@ -38,6 +37,7 @@ GOOGLEBOT_HTML_BYTES = 2 * 1024 * 1024  # Googlebot reads only the first 2 MB of
 SAME_LASTMOD_SHARE = 0.9  # this share of sitemap URLs on one lastmod looks like the generation time
 SAME_LASTMOD_MIN_URLS = 10
 EXAMPLES = 3  # examples quoted in an issue's details
+ISSUE_CATEGORY = 'AI'  # the category these checks' issues carry in the Issues tab
 
 GENERIC_HEADINGS = {'info', 'information', 'more', 'more info', 'more information', 'learn more', 'read more',
                     'click here'}
@@ -70,12 +70,25 @@ _ADDRESS_WORDS = {'street': 'st', 'avenue': 'ave', 'av': 'ave', 'boulevard': 'bl
                   'drive': 'dr', 'lane': 'ln', 'court': 'ct', 'place': 'pl', 'parkway': 'pkwy', 'highway': 'hwy',
                   'suite': 'ste', 'apartment': 'apt', 'north': 'n', 'south': 's', 'east': 'e', 'west': 'w',
                   'northeast': 'ne', 'northwest': 'nw', 'southeast': 'se', 'southwest': 'sw'}
-_FAQ_HEADING = re.compile(r'\b(faqs?|frequently asked|common questions|questions (and|&) answers|q\s?&\s?a)\b', re.I)
 _ISO_DAY = re.compile(r'\s*(\d{4})-(\d{2})-(\d{2})')
 _MONTHS = ('january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
            'september', 'october', 'november', 'december')
-_LLMS_TITLE = re.compile(r'^\s*#\s+\S', re.M)
-_MARKDOWN_LINK = re.compile(r'\[[^\]]+\]\([^)]+\)')
+
+
+def sitemap_lastmod_problems(lastmods):
+    """{sitemap file: what's wrong with its lastmod dates} for each sitemap
+    file with a problem. lastmods maps each file to {page URL: lastmod}."""
+    problems = {}
+    for sitemap, entries in (lastmods or {}).items():
+        dated = [value for value in entries.values() if value]
+        if len(dated) < len(entries):
+            problems[sitemap] = f'{len(entries) - len(dated)} of {len(entries)} URLs have no lastmod'
+            continue
+        value, count = Counter(dated).most_common(1)[0]
+        if len(dated) >= SAME_LASTMOD_MIN_URLS and count >= SAME_LASTMOD_SHARE * len(dated):
+            problems[sitemap] = (f'{count} of {len(dated)} URLs share lastmod {value}, '
+                                 'which looks like when the sitemap was generated')
+    return problems
 
 
 def sitemap_lastmod_status(site):
@@ -86,191 +99,159 @@ def sitemap_lastmod_status(site):
         return 'Not checked: sitemap discovery was off, or this was a list crawl', False
     if not lastmods:
         return 'No sitemap found', False
-    dated = [value for value in lastmods.values() if value]
-    if len(dated) < len(lastmods):
-        return f'{len(lastmods) - len(dated)} of {len(lastmods)} sitemap URLs have no lastmod', True
-    value, count = Counter(dated).most_common(1)[0]
-    if len(dated) >= SAME_LASTMOD_MIN_URLS and count >= SAME_LASTMOD_SHARE * len(dated):
-        return (f'{count} of {len(dated)} URLs share lastmod {value}, '
-                'which looks like when the sitemap was generated'), True
-    return f'All {len(dated)} sitemap URLs have a lastmod', False
+    problems = sitemap_lastmod_problems(lastmods)
+    if len(problems) == 1 and len(lastmods) == 1:
+        return next(iter(problems.values())), True
+    if problems:
+        return f'{len(problems)} of {len(lastmods)} sitemaps have lastmod problems', True
+    return f'All {sum(map(len, lastmods.values()))} sitemap URLs have a lastmod', False
 
 
-def llms_txt_status(site):
-    """The llms.txt row of the tab: (what it shows, never a problem). Format rules are Lighthouse's."""
-    fetched = site.get('llms_txt') or {}
-    status = fetched.get('status')
-    if status is None:
-        return "Couldn't be fetched", False
-    if not 200 <= status < 300:
-        return f'Not found ({status})', False
-    text = fetched.get('text') or ''
-    if text.lstrip().startswith('<'):
-        return 'Returns an HTML page, not an llms.txt file', False
-    problems = [problem for problem, ok in (('is under 50 characters', len(text.strip()) >= 50),
-                                            ('has no "# " title', _LLMS_TITLE.search(text)),
-                                            ('has no Markdown links', _MARKDOWN_LINK.search(text))) if not ok]
-    return 'Found' + (f', but it {" and ".join(problems)}' if problems else ''), False
-
-
-# Every check in the AI Search tab, in display order. A check with an issue is
-# raised per page in the Issues tab; one with count is a page inventory that is
-# never flagged; one with site is a single row about the whole site.
+# Every check in the AI Search tab, in display order. Each raises its issue in
+# the Issues tab, as severe as its evidence is strong: per page, or for a check
+# with site, per sitemap file, with one row about the whole site in the tab.
 AI_SEARCH_CHECKS = {
     'blocked_search': {
-        'group': 'Access', 'issue': 'Blocked for AI Search Bots', 'type': 'warning', 'evidence': 'documented',
+        'group': 'Access', 'issue': 'Blocked for AI Search Bots', 'evidence': 'documented',
         'basis': "AI search engines cite pages their search bot may fetch, and each vendor documents its bot's "
                  'robots.txt token.'},
     'blocked_live': {
-        'group': 'Access', 'issue': 'Blocked for AI Live Fetchers', 'type': 'info', 'evidence': 'documented',
+        'group': 'Access', 'issue': 'Blocked for AI Live Fetchers', 'evidence': 'documented',
         'basis': 'Stops an assistant reading the page while it answers a user. OpenAI and Perplexity say these '
                  'fetchers may not follow robots.txt.'},
     'no_google_ai': {
-        'group': 'Access', 'issue': 'Excluded from Google AI Answers', 'type': 'warning', 'evidence': 'documented',
+        'group': 'Access', 'issue': 'Excluded from Google AI Answers', 'evidence': 'documented',
         'basis': "Google: nosnippet and max-snippet:0 keep a page's text out of AI Overviews and AI Mode."},
     'snippet_limited': {
-        'group': 'Access', 'issue': 'AI Snippet Limited', 'type': 'info', 'evidence': 'documented',
+        'group': 'Access', 'issue': 'AI Snippet Limited', 'evidence': 'documented',
         'basis': 'Google: max-snippet caps how much of the page its AI features may quote.'},
     'no_copilot': {
-        'group': 'Access', 'issue': 'Excluded from Copilot Answers', 'type': 'warning', 'evidence': 'documented',
+        'group': 'Access', 'issue': 'Excluded from Copilot Answers', 'evidence': 'documented',
         'basis': "Bing: NOARCHIVE stops Copilot using the page's content in answers."},
     'copilot_limited': {
-        'group': 'Access', 'issue': 'Copilot Limited to Title and Snippet', 'type': 'info',
-        'evidence': 'documented', 'basis': "Bing: NOCACHE limits Copilot to the page's URL, title and snippet."},
+        'group': 'Access', 'issue': 'Copilot Limited to Title and Snippet', 'evidence': 'documented',
+        'basis': "Bing: NOCACHE limits Copilot to the page's URL, title and snippet."},
     'nosnippet_text': {
-        'group': 'Access', 'issue': 'Text Hidden from AI Snippets', 'type': 'info', 'evidence': 'documented',
+        'group': 'Access', 'issue': 'Text Hidden from AI Snippets', 'evidence': 'documented',
         'basis': "Google: text inside data-nosnippet isn't quoted in snippets or AI features."},
     'needs_js': {
-        'group': 'Markup & JavaScript', 'issue': 'Content Needs JavaScript', 'type': 'warning',
-        'evidence': 'guidance', 'js_only': True,
+        'group': 'Markup & JavaScript', 'issue': 'Content Needs JavaScript', 'evidence': 'guidance',
+        'js_only': True,
         'basis': "Bing: don't hide important content behind client-side rendering. The ChatGPT, Claude and "
                  "Perplexity crawlers don't run JavaScript."},
     'js_head': {
-        'group': 'Markup & JavaScript', 'issue': 'Head Tags Change After JavaScript', 'type': 'warning',
-        'evidence': 'guidance', 'js_only': True,
+        'group': 'Markup & JavaScript', 'issue': 'Head Tags Change After JavaScript', 'evidence': 'guidance',
+        'js_only': True,
         'basis': "Crawlers that don't run JavaScript see only the original tags, and Google's JavaScript SEO "
                  'guide warns against changing canonical or robots tags with JavaScript.'},
     'invalid_schema': {
-        'group': 'Markup & JavaScript', 'issue': 'Invalid Structured Data', 'type': 'warning',
-        'evidence': 'convention',
+        'group': 'Markup & JavaScript', 'issue': 'Invalid Structured Data', 'evidence': 'convention',
         'basis': "Six major audit tools flag JSON-LD that doesn't parse or lacks a schema.org @context and "
                  '@type; search engines skip such a block.'},
     'schema_only': {
-        'group': 'Markup & JavaScript', 'issue': 'Facts Only in Structured Data', 'type': 'warning',
-        'evidence': 'guidance',
+        'group': 'Markup & JavaScript', 'issue': 'Facts Only in Structured Data', 'evidence': 'guidance',
         'basis': 'Google and Bing: structured data must match what the page shows. In a 2025 test, ChatGPT, '
                  'Claude, Perplexity and Gemini ignored JSON-LD when reading pages.'},
     'html_over_2mb': {
-        'group': 'Markup & JavaScript', 'issue': 'HTML Over 2 MB', 'type': 'warning', 'evidence': 'documented',
+        'group': 'Markup & JavaScript', 'issue': 'HTML Over 2 MB', 'evidence': 'documented',
         'basis': "Google: Googlebot reads only the first 2 MB of an HTML file, so content after that isn't "
                  'indexed.'},
     'heading_skips': {
-        'group': 'Structure', 'issue': 'Skipped Heading Levels', 'type': 'info', 'evidence': 'guidance',
+        'group': 'Structure', 'issue': 'Skipped Heading Levels', 'evidence': 'guidance',
         'basis': 'Bing asks for a logical H1-H6 hierarchy, and Google for headings that give the page a clear '
                  'structure. Checked in <main> when the page has one.'},
     'weak_headings': {
-        'group': 'Structure', 'issue': 'Empty or Generic Headings', 'type': 'info', 'evidence': 'guidance',
+        'group': 'Structure', 'issue': 'Empty or Generic Headings', 'evidence': 'guidance',
         'basis': "Bing: use headings that say what the section covers, not vague ones like 'Learn more'."},
     'hidden_content': {
-        'group': 'Structure', 'issue': 'Content Hidden by Default', 'type': 'info', 'evidence': 'guidance',
+        'group': 'Structure', 'issue': 'Content Hidden by Default', 'evidence': 'guidance',
         'basis': "Bing: don't hide important answers in tabs or expandable menus, since AI systems may not "
                  'render them. Catches closed <details>, the hidden attribute and aria-expanded panels, not '
                  'panels hidden with CSS alone.'},
     'ai_instructions': {
-        'group': 'Structure', 'issue': 'Hidden Instructions for AI', 'type': 'warning', 'evidence': 'documented',
+        'group': 'Structure', 'issue': 'Hidden Instructions for AI', 'evidence': 'documented',
         'basis': "Bing: content written to manipulate language models can cost a page its visibility or get it "
                  "removed, and Google's spam policy covers manipulating AI answers. Matched by wording, so "
                  'check each one.'},
     'links_no_text': {
-        'group': 'Structure', 'issue': 'Links Without Text', 'type': 'info', 'evidence': 'guidance',
+        'group': 'Structure', 'issue': 'Links Without Text', 'evidence': 'guidance',
         'basis': 'Google and Bing ask for descriptive link text; an internal link with no text, alt or '
                  'aria-label says nothing about the page it points to.'},
     'generic_links': {
-        'group': 'Structure', 'issue': 'Generic Link Text', 'type': 'info', 'evidence': 'guidance',
+        'group': 'Structure', 'issue': 'Generic Link Text', 'evidence': 'guidance',
         'basis': "Google's link best practices ask for descriptive anchor text rather than generic text like "
                  "'click here'. Checks internal links."},
     'unfollowable_links': {
-        'group': 'Structure', 'issue': "Links Crawlers Can't Follow", 'type': 'warning', 'evidence': 'guidance',
+        'group': 'Structure', 'issue': "Links Crawlers Can't Follow", 'evidence': 'guidance',
         'basis': 'Google can only follow links that are <a> elements with an href, and Bing asks for standard '
                  '<a href> links. Flags href on other elements and navigation done in JavaScript.'},
     'bad_dates': {
-        'group': 'Freshness', 'issue': 'Inconsistent Page Dates', 'type': 'warning', 'evidence': 'guidance',
+        'group': 'Freshness', 'issue': 'Inconsistent Page Dates', 'evidence': 'guidance',
         'basis': 'Google asks for accurate structured dates. Flags dates in the future, and modified dates '
                  'before published ones.'},
     'date_not_shown': {
-        'group': 'Freshness', 'issue': 'Date Not Shown on Page', 'type': 'info', 'evidence': 'guidance',
+        'group': 'Freshness', 'issue': 'Date Not Shown on Page', 'evidence': 'guidance',
         'basis': "Google: show a visible date that matches the one in the markup. Flags article pages whose "
                  "published and modified days don't appear in the text."},
     'sitemap_lastmod': {
-        'group': 'Freshness', 'label': 'Sitemap lastmod dates', 'evidence': 'guidance',
+        'group': 'Freshness', 'issue': 'Sitemap Lastmod Problems', 'evidence': 'guidance',
         'site': sitemap_lastmod_status,
         'basis': "Google uses lastmod only when it's consistently accurate. Bing calls it a key signal for AI "
                  'search, and says not to set it to the time the sitemap was generated.'},
-    'faq': {
-        'group': 'Content inventory', 'label': 'Has an FAQ section', 'evidence': 'unproven',
-        'count': lambda facts: facts.get('faq'),
-        'basis': 'Bing recommends FAQ sections. A study of 158K AI answers found no effect when comparing pages '
-                 'on the same site.'},
-    'question_headings': {
-        'group': 'Content inventory', 'label': 'Has headings phrased as questions', 'evidence': 'unproven',
-        'count': lambda facts: facts.get('question_headings'),
-        'basis': 'Bing gives question headings as an example. Studies disagree, and matching what people ask '
-                 'mattered more than the question form.'},
-    'lists_tables': {
-        'group': 'Content inventory', 'label': 'Has lists or tables', 'evidence': 'unproven',
-        'count': lambda facts: facts.get('lists_tables'),
-        'basis': 'Bing recommends lists and tables. Comparing pages on the same site, studies found no effect '
-                 'on citations.'},
     'long_intro': {
-        'group': 'Content inventory', 'label': f'Over {LONG_INTRO_WORDS} words before the first subheading',
-        'evidence': 'guidance', 'count': lambda facts: (facts.get('intro_words') or 0) > LONG_INTRO_WORDS,
+        'group': 'Content', 'issue': 'Long Intro Before First Subheading', 'evidence': 'guidance',
         'basis': 'Bing: avoid long introductions before the main topic. One study found 44% of ChatGPT '
                  f"citations come from the first 30% of a page. The {LONG_INTRO_WORDS}-word cut-off is "
                  "LibreCrawl's."},
     'very_long': {
-        'group': 'Content inventory', 'label': f'Over {LONG_PAGE_CHARS:,} characters of text',
-        'evidence': 'convention', 'count': lambda facts: (facts.get('text_chars') or 0) > LONG_PAGE_CHARS,
+        'group': 'Content', 'issue': f'Page Text Over {LONG_PAGE_CHARS:,} Characters', 'evidence': 'convention',
         'basis': "Sitebulb's AI-readiness check warns above 100,000 characters (about 25,000 tokens), since AI "
                  'tools may read only part of a long page.'},
-    'llms_txt': {
-        'group': 'Content inventory', 'label': 'llms.txt', 'evidence': 'unproven', 'site': llms_txt_status,
-        'basis': 'Google ignores llms.txt, and Ahrefs found 97% of llms.txt files got no requests at all. '
-                 'Shown for completeness.'},
 }
+
+
+def severity(check):
+    """How severe one of AI_SEARCH_CHECKS is in the Issues tab: set by its evidence"""
+    return EVIDENCE[AI_SEARCH_CHECKS[check]['evidence']]['issue_type']
 
 
 def ai_issue(url, check, details):
     """An Issues tab entry for one of AI_SEARCH_CHECKS"""
-    spec = AI_SEARCH_CHECKS[check]
-    return {'url': url, 'type': spec['type'], 'category': 'AI Search', 'issue': spec['issue'], 'details': details}
+    return {'url': url, 'type': severity(check), 'category': ISSUE_CATEGORY,
+            'issue': AI_SEARCH_CHECKS[check]['issue'], 'details': details}
 
 
 def ai_search_report(access, pages, issues, site):
     """The AI Search tab: the robots.txt access summary, then a row per check
-    with the share of `pages` (internal HTML pages) it flags or counts"""
+    with the share of `pages` (internal HTML pages) it flags"""
     urls = {page['url'] for page in pages}
     flagged = defaultdict(set)
     for issue in issues:
-        if issue['category'] == 'AI Search' and issue['url'] in urls:
+        if issue['category'] == ISSUE_CATEGORY and issue['url'] in urls:
             flagged[issue['issue']].add(issue['url'])
     rendered = any(page.get('raw_word_count') is not None for page in pages)
 
     rows = []
     for check in AI_SEARCH_CHECKS.values():
         evidence = EVIDENCE[check['evidence']]
-        row = {'group': check['group'], 'check': check.get('issue') or check['label'], 'basis': check['basis'],
-               'evidence': evidence['label'], 'strength': evidence['strength'], 'flag': False}
+        row = {'group': check['group'], 'check': check['issue'], 'basis': check['basis'],
+               'evidence': evidence['label'], 'strength': evidence['strength']}
+        problem = False
         if 'site' in check:
-            row['value'], row['flag'] = check['site'](site)
+            row['value'], problem = check['site'](site)
         elif check.get('js_only') and not rendered:
             row['value'] = 'Needs JavaScript rendering'
-        elif 'issue' in check:
-            row['pages'] = len(flagged[check['issue']])
-            row['flag'] = bool(row['pages']) and check['type'] != 'info'
         else:
-            row['pages'] = sum(1 for page in pages if check['count'](page.get('ai_search') or {}))
+            row['pages'] = len(flagged[check['issue']])
+            problem = bool(row['pages'])
+        row['flag'] = tint(evidence['issue_type']) if problem else None
         rows.append(row)
     return {**access, 'checks': rows, 'evidence_levels': list(EVIDENCE.values())}
+
+
+def tint(issue_type):
+    """The issue type a problem row in the tab is tinted as: errors and warnings are, notes aren't"""
+    return issue_type if issue_type != 'info' else None
 
 
 def _is_text(string):
@@ -334,8 +315,6 @@ def page_facts(soup, result, base_domain):
         'date_published': published and published.isoformat(),
         'date_modified': modified and modified.isoformat(),
         'date_shown': _date_shown((published, modified), text, soup),
-        'faq': _has_faq(main, blocks),
-        'lists_tables': _lists_and_tables(main),
         'intro_words': _intro_words(main),
         'text_chars': len(text),
     }
@@ -407,8 +386,8 @@ def _hidden_words(regions):
 
 
 def _heading_facts(main, hidden_ids):
-    """Skipped levels, empty and generic headings, and question headings in the main content"""
-    facts = {'heading_skips': [], 'empty_headings': 0, 'generic_headings': [], 'question_headings': 0}
+    """Skipped levels, and empty and generic headings, in the main content"""
+    facts = {'heading_skips': [], 'empty_headings': 0, 'generic_headings': []}
     previous = None
     for heading in main.find_all(_HEADING):
         if _within(heading, hidden_ids) or _in_boilerplate(heading):
@@ -422,8 +401,6 @@ def _heading_facts(main, hidden_ids):
             facts['empty_headings'] += 1
         elif text.lower().rstrip(' :.') in GENERIC_HEADINGS:
             facts['generic_headings'].append(text)
-        if level in (2, 3) and text.endswith('?'):
-            facts['question_headings'] += 1
     return facts
 
 
@@ -645,22 +622,6 @@ def _date_shown(days, text, soup):
         return True
     lang = (soup.html.get('lang') or '') if soup.html else ''
     return False if not lang or lang.lower().startswith('en') else None
-
-
-def _has_faq(main, blocks):
-    """An FAQ heading in the main content, FAQPage markup, or two or more <details> whose summary is a question"""
-    return (any(_FAQ_HEADING.search(heading.get_text(' ')) for heading in main.find_all(_HEADING)
-                if not _in_boilerplate(heading))
-            or any('FAQPage' in _types(node) for node in json_ld_nodes(blocks))
-            or sum(summary.get_text(strip=True).endswith('?') for summary in main.find_all('summary')) >= 2)
-
-
-def _lists_and_tables(main):
-    """Lists of two or more items and tables of two or more rows in the main
-    content, leaving out lists of links (menus, category widgets)"""
-    return sum(1 for tag in main.find_all(('ul', 'ol', 'table'))
-               if len(tag.find_all('tr' if tag.name == 'table' else 'li')) >= 2
-               and not _in_boilerplate(tag) and not _mostly_links(tag))
 
 
 def _intro_words(main):

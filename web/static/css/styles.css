@@ -1159,6 +1159,53 @@ body {
     margin: 0;
 }
 
+/* Issues tab filters: the severity buttons, then a button per category.
+   Category buttons look like the neutral All Issues button. */
+.issue-filters {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 16px 20px 0;
+}
+
+.issue-filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+    align-items: center;
+}
+
+.issue-filter-row[hidden] {
+    display: none;
+}
+
+.issue-category {
+    background: transparent;
+    border: 1px solid #4b5563;
+    color: #9ca3af;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.issue-category:hover,
+.issue-category.active {
+    color: white;
+}
+
+.issue-category.active {
+    background: #374151;
+}
+
+.issue-category span {
+    margin-left: 4px;
+    opacity: 0.7;
+}
+
 /* AI Search tab: its tables are short, so they grow to fit their rows */
 .table-container.auto-height {
     height: auto;

@@ -9,7 +9,8 @@ from fnmatch import fnmatch
 from urllib.parse import urljoin, urlparse
 
 from src.core.ai_access import AI_BOTS, BOT_KINDS
-from src.core.ai_search import EXAMPLES, GOOGLEBOT_HTML_BYTES, HIDDEN_MIN_WORDS, JS_HEAD_TAGS, ai_issue
+from src.core.ai_search import (EXAMPLES, GOOGLEBOT_HTML_BYTES, HIDDEN_MIN_WORDS, JS_HEAD_TAGS, LONG_INTRO_WORDS,
+                                 LONG_PAGE_CHARS, ai_issue, sitemap_lastmod_problems)
 from src.core.link_manager import normalize_url
 
 # Near-duplicate detection is bounded so a large site can never hold a crawl in
@@ -629,6 +630,11 @@ class IssueDetector:
             dates = ', '.join(f'{name} {day}' for name, day in (('published', published), ('modified', modified)) if day)
             add('date_not_shown', f"The article's dates in its markup ({dates}) don't appear in the page text")
 
+        if (facts['intro_words'] or 0) > LONG_INTRO_WORDS:
+            add('long_intro', f"{facts['intro_words']} words come before the first H2 (over {LONG_INTRO_WORDS})")
+        if facts['text_chars'] > LONG_PAGE_CHARS:
+            add('very_long', f"{facts['text_chars']:,} characters of text, about {facts['text_chars'] // 4:,} tokens")
+
     def _check_broken_image_issues(self, result, issues):
         """Check for broken image URLs on the page"""
         url = result.get('url', '')
@@ -715,6 +721,14 @@ class IssueDetector:
                     issues.append(ai_issue(url, check, 'robots.txt blocks ' + ', '.join(
                         f"{token} ({AI_BOTS[token]['used_by']})" for token in tokens)))
 
+        with self.issues_lock:
+            self.detected_issues.extend(issues)
+
+    def detect_ai_sitemap_issues(self, all_results, lastmods):
+        """Flag each sitemap file whose lastmod dates are missing or look
+        generated. lastmods maps each sitemap file to {page URL: lastmod}."""
+        issues = [ai_issue(sitemap, 'sitemap_lastmod', problem)
+                  for sitemap, problem in sitemap_lastmod_problems(lastmods).items()]
         with self.issues_lock:
             self.detected_issues.extend(issues)
 

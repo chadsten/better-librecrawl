@@ -7,7 +7,7 @@ gathers model training data: blocking it is a business choice and leaves the
 site in AI answers. Sources: each vendor's crawler docs, as of Oct 2026.
 """
 
-from src.core.ai_search import AI_SEARCH_CHECKS
+from src.core.ai_search import severity, tint
 
 # Grouped by kind; check is the AI_SEARCH_CHECKS entry raised for a page blocked to a bot of that kind
 BOT_KINDS = {
@@ -73,12 +73,12 @@ def ai_robots_access(pages, robots_for, site_url):
         'pages': len(pages),
         'bots': [{'token': token, 'used_by': bot['used_by'], 'kind': BOT_KINDS[bot['kind']]['label'],
                   'note': bot.get('note', ''), 'blocked_pages': len(blocked[token]),
-                  'flagged': bool(blocked[token]) and _flags(BOT_KINDS[bot['kind']]['check'])}
+                  'flag': _flag(BOT_KINDS[bot['kind']]['check']) if blocked[token] else None}
                  for token, bot in AI_BOTS.items()],
     }
     return summary, blocked
 
 
-def _flags(check):
-    """Whether pages blocked to a bot of this kind get a warning, not just a note"""
-    return check is not None and AI_SEARCH_CHECKS[check]['type'] == 'warning'
+def _flag(check):
+    """How a bot's row is tinted when it's blocked: as its issues are, and not at all for training bots"""
+    return tint(severity(check)) if check else None

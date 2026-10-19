@@ -385,8 +385,9 @@
                         </div>
 
                         <div id="issues-tab" class="tab-pane">
-                            <!-- Severity Filters -->
-                            <div class="filter-bar" style="margin-bottom: 20px; display: flex; gap: 10px; justify-content: center; align-items: center;">
+                            <!-- Severity filters, then one button per category (filled in by app.js) -->
+                            <div class="issue-filters">
+                            <div class="filter-bar issue-filter-row">
                                 <button class="filter-item active" onclick="filterIssues('all')" data-filter="all" style="background: #374151; border: 1px solid #4b5563; color: white; padding: 8px 16px; border-radius: 6px; cursor: pointer; transition: all 0.2s; font-size: 14px; font-weight: 500; min-width: 120px;">
                                     All Issues <span id="issues-all-count" style="opacity: 0.7;">(0)</span>
                                 </button>
@@ -399,6 +400,8 @@
                                 <button class="filter-item" onclick="filterIssues('info')" data-filter="info" style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); color: #3b82f6; padding: 8px 16px; border-radius: 6px; cursor: pointer; transition: all 0.2s; font-size: 14px; font-weight: 500; min-width: 90px;">
                                     <span>ℹ️</span> Info <span id="issues-info-count" style="opacity: 0.7;">(0)</span>
                                 </button>
+                            </div>
+                            <div class="issue-filter-row" id="issueCategoryFilters" hidden></div>
                             </div>
 
                             <div class="table-container">
@@ -473,7 +476,7 @@
 
                                     <div class="pagespeed-header">
                                         <h3>Page checks</h3>
-                                        <p class="pagespeed-description">Each check, the share of crawled pages it applies to, and how strong the evidence behind it is. In the largest study so far, where a page ranks in the AI engine's own searches explained about 32% of which pages got cited, and everything on the page together about 3% (Chen &amp; Koudas, 2026 preprint). So treat these as hygiene, not a score. Affected pages are listed in the Issues tab under AI Search. With JavaScript rendering on, the page checks read the rendered page.</p>
+                                        <p class="pagespeed-description">Each check, the share of crawled pages it applies to, and how strong the evidence behind it is. In the largest study so far, where a page ranks in the AI engine's own searches explained about 32% of which pages got cited, and everything on the page together about 3% (Chen &amp; Koudas, 2026 preprint). So treat these as hygiene, not a score. Affected pages are listed in the Issues tab, under the AI category. With JavaScript rendering on, the page checks read the rendered page.</p>
                                         <div class="pagespeed-description ai-search-legend" id="aiSearchLegend"></div>
                                     </div>
                                     <div class="table-container auto-height">

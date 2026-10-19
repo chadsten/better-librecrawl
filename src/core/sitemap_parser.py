@@ -11,7 +11,7 @@ class SitemapParser:
         self.session = session
         self.base_domain = base_domain
         self.timeout = timeout
-        self.lastmods = {}  # every sitemap URL read -> its <lastmod> text, or None
+        self.lastmods = {}  # each sitemap file read -> {page URL: its <lastmod> text, or None}
 
     def discover_sitemaps(self, base_url):
         """
@@ -126,7 +126,7 @@ class SitemapParser:
                         url = loc_elem.text.strip()
                         all_urls.append(url)
                         lastmod = (url_elem.findtext('lastmod') or '').strip()
-                        self.lastmods[url] = lastmod or self.lastmods.get(url)
+                        self.lastmods.setdefault(sitemap_url, {})[url] = lastmod or None
 
             return all_urls
 

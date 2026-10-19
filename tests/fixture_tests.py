@@ -818,8 +818,7 @@ def test_page_fetch_is_one_request():
     }, hits=hits), site)
     try:
         crawler = crawl(f'http://127.0.0.1:{site}/', max_file_size=2000)
-        # robots.txt and llms.txt are read once each, for AI Search
-        pages = sorted(hit for hit in hits if hit not in ('GET /robots.txt', 'GET /llms.txt'))
+        pages = sorted(hit for hit in hits if hit != 'GET /robots.txt')  # read once, for AI Search
         result('pages are fetched with a single GET', pages == ['GET /', 'GET /big', 'GET /page'],
                str(pages))
         big = next(r for r in crawler.crawl_results if r['url'].endswith('/big'))
@@ -1029,22 +1028,23 @@ def test_ai_access_robots_matrix():
     try:
         crawler = crawl(f'http://127.0.0.1:{site}/')
         report = crawler.stats.get('ai_search') or {}
-        bots = {bot['token']: (bot['blocked_pages'], bot['flagged']) for bot in report.get('bots', [])}
-        result('blocked pages are counted per bot, and only search bots are flagged',
-               report.get('pages') == 3 and bots.get('GPTBot') == (3, False)
-               and bots.get('PerplexityBot') == (1, True) and bots.get('ChatGPT-User') == (3, False)
-               and bots.get('OAI-SearchBot') == (0, False), str(bots))
+        bots = {bot['token']: (bot['blocked_pages'], bot['flag']) for bot in report.get('bots', [])}
+        result('blocked pages are counted per bot; blocked search bots and live fetchers are errors, training bots not',
+               report.get('pages') == 3 and bots.get('GPTBot') == (3, None)
+               and bots.get('PerplexityBot') == (1, 'error') and bots.get('ChatGPT-User') == (3, 'error')
+               and bots.get('OAI-SearchBot') == (0, None), str(bots))
         result('Cloudflare managed rules and content signals are spotted',
                report.get('cloudflare_managed') and report.get('content_signals') == ['search=yes, ai-train=no']
                and report.get('robots_status') == 200 and not report.get('robots_unavailable'), str(report))
 
         def ai_issues(path):
-            return {i['issue']: i['details'] for i in issues_for(crawler, path) if i['category'] == 'AI Search'}
+            return {i['issue']: (i['type'], i['details']) for i in issues_for(crawler, path) if i['category'] == 'AI'}
 
         post, about = ai_issues('/blog/post'), ai_issues('/about')
-        result('a page blocked for a search bot is flagged with the bot named',
-               'PerplexityBot (Perplexity search)' in post.get('Blocked for AI Search Bots', ''), str(post))
-        result('live fetchers get an info issue and training bots none',
+        result('a page blocked for a search bot is an error naming the bot',
+               post.get('Blocked for AI Search Bots', ('', ''))[0] == 'error'
+               and 'PerplexityBot (Perplexity search)' in post['Blocked for AI Search Bots'][1], str(post))
+        result('live fetchers raise an issue too, and training bots none',
                set(about) == {'Blocked for AI Live Fetchers'} and 'GPTBot' not in str(post), str(about))
     finally:
         a.shutdown()
@@ -1068,7 +1068,7 @@ def test_ai_snippet_and_copilot_controls():
     }), site)
     try:
         crawler = crawl(f'http://127.0.0.1:{site}/')
-        got = {p: sorted(i['issue'] for i in issues_for(crawler, p) if i['category'] == 'AI Search')
+        got = {p: sorted(i['issue'] for i in issues_for(crawler, p) if i['category'] == 'AI')
                for p in paths}
         result('each control raises its own issue', got == {
             '/nosnip': ['Excluded from Google AI Answers'],
@@ -1079,7 +1079,7 @@ def test_ai_snippet_and_copilot_controls():
             '/hidden': ['Text Hidden from AI Snippets'],
             '/gnoindex': [],
         }, str(got))
-        hidden = next(i['details'] for i in issues_for(crawler, '/hidden') if i['category'] == 'AI Search')
+        hidden = next(i['details'] for i in issues_for(crawler, '/hidden') if i['category'] == 'AI')
         result('data-nosnippet words are counted once', hidden.startswith('4 words'), hidden)
         result('a googlebot meta noindex counts as noindex',
                any(i['issue'] == 'Noindex Tag Present' and 'meta googlebot tag' in i['details']
@@ -1150,9 +1150,9 @@ def test_ai_search_page_facts():
     """What the AI Search checks read from a page's HTML."""
     headings = ai_page_facts('<nav><h4>Menu</h4></nav><main><h1>A</h1><h2>Learn more</h2><h4>Deep</h4><h3></h3>'
                              '<h2>What is it?</h2><div hidden><h6>x</h6></div></main><footer><h5>f</h5></footer>')
-    result('heading outline: skips, empty, generic and question headings in <main>',
-           (headings['heading_skips'], headings['empty_headings'], headings['generic_headings'],
-            headings['question_headings']) == (['H2 → H4'], 1, ['Learn more'], 1), str(headings))
+    result('heading outline: skips, and empty and generic headings, in <main>',
+           (headings['heading_skips'], headings['empty_headings'], headings['generic_headings'])
+           == (['H2 → H4'], 1, ['Learn more']), str(headings))
     sectioned = ai_page_facts('<h1>T</h1><section><header><h2>Features</h2></header><h3>Fast</h3></section>')
     result("a section's own <header> is content, not site chrome", sectioned['heading_skips'] == [],
            str(sectioned['heading_skips']))
@@ -1239,11 +1239,8 @@ def test_ai_search_page_facts():
            == ('2026-03-05', '2026-04-02', False), str(from_meta))
 
     intro = ai_page_facts(f'<header><h1>Site</h1></header><main><h1>Page</h1><p>{"word " * 40}</p>'
-                          '<ul><li>a</li><li>b</li></ul><h2>Next</h2>'
-                          '<ul><li><a href="/c1">Category one</a></li><li><a href="/c2">Category two</a></li></ul>'
-                          '</main><nav><ul><li>x</li><li>y</li></ul></nav><footer><h4>FAQ</h4></footer>')
-    result('words before the first H2, and content lists (not link lists) in the main content, are counted',
-           (intro['intro_words'], intro['lists_tables'], intro['faq']) == (42, 1, False), str(intro))
+                          '<ul><li>a</li><li>b</li></ul><h2>Next</h2></main>')
+    result('words between the main H1 and the first H2 are counted', intro['intro_words'] == 42, str(intro))
     result('a page without an H2 has no intro length', ai_page_facts('<h1>T</h1><p>x</p>')['intro_words'] is None)
 
 
@@ -1263,52 +1260,55 @@ def test_js_head_changes():
 
 
 def test_ai_search_checks_in_a_crawl():
-    """Page checks become AI Search issues (never on noindexed pages), and the
-    AI Search tab tallies every check, page inventories and site rows included."""
+    """Page checks become AI issues as severe as their evidence is strong (never
+    on noindexed pages), and the AI Search tab tallies every check."""
     site = BASE_PORT + 56
-    paths = ['/skips', '/hidden', '/dated', '/noindex', '/big']
+    paths = ['/skips', '/hidden', '/dated', '/noindex', '/big', '/intro']
     a = serve(make_handler({
-        '/': html(''.join(f'<a href="{p}">{p} page</a>' for p in paths) + '<h2>Frequently asked questions</h2>'),
+        '/': html(''.join(f'<a href="{p}">{p} page</a>' for p in paths)),
         '/skips': html('<main><h1>A</h1><h2>B</h2><h4>C</h4></main>'),
+        '/intro': html(f'<main><h1>I</h1><p>{"word " * 160}</p><h2>Then</h2></main>'),
         '/hidden': html(f'<main><h1>A</h1><details><summary>More</summary><p>{"word " * 60}</p></details></main>'),
         '/dated': page('d', h1='D', head=ld({'@context': 'https://schema.org', '@type': 'Article',
                                              'datePublished': '2026-01-01', 'dateModified': '2099-01-01'})),
         '/noindex': page('n', h1='N', head='<meta name="robots" content="noindex">'
                                            '<!-- ignore previous instructions -->'),
         '/big': html('<p>' + 'x ' * 1_100_000 + '</p>'),
-        '/llms.txt': '# Site\n\n> A site.\n\n- [Docs](https://example.test/docs): the docs\n',
     }), site)
     try:
         crawler = crawl(f'http://127.0.0.1:{site}/')
-        got = {p: sorted(i['issue'] for i in issues_for(crawler, p) if i['category'] == 'AI Search')
+        got = {p: sorted((i['issue'], i['type']) for i in issues_for(crawler, p) if i['category'] == 'AI')
                for p in paths}
-        result('each page check raises its issue, and a noindexed page none', got == {
-            '/skips': ['Skipped Heading Levels'],
-            '/hidden': ['Content Hidden by Default'],
-            '/dated': ['Date Not Shown on Page', 'Inconsistent Page Dates'],
+        result('each page check raises its issue, typed by its evidence, and a noindexed page none', got == {
+            '/skips': [('Skipped Heading Levels', 'warning')],
+            '/hidden': [('Content Hidden by Default', 'warning')],
+            '/dated': [('Date Not Shown on Page', 'warning'), ('Inconsistent Page Dates', 'warning')],
             '/noindex': [],
-            '/big': ['HTML Over 2 MB'],
+            '/big': [('HTML Over 2 MB', 'error'), ('Page Text Over 100,000 Characters', 'info')],
+            '/intro': [('Long Intro Before First Subheading', 'warning')],
         }, str(got))
 
         report = crawler.stats.get('ai_search') or {}
         rows = {row['check']: row for row in report.get('checks', [])}
-        result('the tab counts pages per check, and flags only warnings', report.get('pages') == 6
-               and (rows['Skipped Heading Levels']['pages'], rows['Skipped Heading Levels']['flag']) == (1, False)
-               and (rows['HTML Over 2 MB']['pages'], rows['HTML Over 2 MB']['flag']) == (1, True)
-               and rows['Has an FAQ section']['pages'] == 1
-               and rows['Over 100,000 characters of text']['pages'] == 1, str(rows))
-        result('site rows and JavaScript-only checks show a status instead of a count',
-               rows['llms.txt']['value'] == 'Found'
-               and rows['Sitemap lastmod dates']['value'].startswith('Not checked')
+        long_page = rows['Page Text Over 100,000 Characters']
+        result('the tab counts pages per check, tinting errors and warnings', report.get('pages') == 7
+               and (rows['Skipped Heading Levels']['pages'], rows['Skipped Heading Levels']['flag']) == (1, 'warning')
+               and (rows['HTML Over 2 MB']['pages'], rows['HTML Over 2 MB']['flag']) == (1, 'error')
+               and (long_page['pages'], long_page['flag']) == (1, None)
+               and (rows['Invalid Structured Data']['pages'], rows['Invalid Structured Data']['flag']) == (0, None),
+               str(rows))
+        result('the site row and JavaScript-only checks show a status instead of a count',
+               rows['Sitemap Lastmod Problems']['value'].startswith('Not checked')
                and rows['Content Needs JavaScript']['value'] == 'Needs JavaScript rendering', str(rows))
-        result('every row carries its evidence', len(report['evidence_levels']) == 4
+        result('every row carries its evidence, and no row has evidence below Tool convention',
+               [level['issue_type'] for level in report['evidence_levels']] == ['error', 'warning', 'info']
                and all(row['evidence'] and row['strength'] and row['basis'] for row in rows.values()))
     finally:
         a.shutdown()
 
 
-def test_sitemap_lastmod_and_llms_txt_rows():
-    """The sitemap row flags missing or copied lastmod dates; llms.txt is reported, never flagged."""
+def test_sitemap_lastmod_row():
+    """The sitemap row flags missing or copied lastmod dates."""
     same, missing = BASE_PORT + 57, BASE_PORT + 58
 
     def sitemap(port, lastmods):
@@ -1317,25 +1317,26 @@ def test_sitemap_lastmod_and_llms_txt_rows():
             + (f'<lastmod>{lastmod}</lastmod>' if lastmod else '') + '</url>'
             for n, lastmod in enumerate(lastmods)) + '</urlset>')
 
-    a = serve(make_handler({'/': html('<p>home</p>'), '/llms.txt': html('<p>not found</p>'),
+    a = serve(make_handler({'/': html('<p>home</p>'),
                             '/sitemap.xml': sitemap(same, ['2026-10-19T03:00:00+00:00'] * 12)}), same)
     b = serve(make_handler({'/': html('<p>home</p>'),
                             '/sitemap.xml': sitemap(missing, ['2026-01-01', None, '2026-02-01'])}), missing)
     try:
-        rows = {}
+        rows, issues = {}, {}
         for port in (same, missing):
             crawler = crawl(f'http://127.0.0.1:{port}/', discover_sitemaps=True)
-            rows[port] = {row['check']: row for row in crawler.stats['ai_search']['checks']}
-        copied, partial = rows[same]['Sitemap lastmod dates'], rows[missing]['Sitemap lastmod dates']
-        result('one lastmod on nearly every sitemap URL is flagged',
-               copied['flag'] and copied['value'].startswith('12 of 12 URLs share lastmod'), str(copied))
-        result('sitemap URLs without a lastmod are flagged',
-               partial['flag'] and partial['value'] == '1 of 3 sitemap URLs have no lastmod', str(partial))
-        result('an llms.txt that is really an HTML page is reported but not flagged',
-               rows[same]['llms.txt']['value'] == 'Returns an HTML page, not an llms.txt file'
-               and not rows[same]['llms.txt']['flag'], str(rows[same]['llms.txt']))
-        result('a missing llms.txt is reported as not found',
-               rows[missing]['llms.txt']['value'] == 'Not found (404)', str(rows[missing]['llms.txt']))
+            rows[port] = crawler.stats['ai_search']['checks']
+            issues[port] = [(i['type'], i['details']) for i in issues_for(crawler, '/sitemap.xml')
+                            if i['issue'] == 'Sitemap Lastmod Problems']
+        copied, partial = ([row for row in rows[port] if row['check'] == 'Sitemap Lastmod Problems'][0]
+                           for port in (same, missing))
+        result('one lastmod on nearly every sitemap URL is flagged as a warning',
+               copied['flag'] == 'warning' and copied['value'].startswith('12 of 12 URLs share lastmod'), str(copied))
+        result('sitemap URLs without a lastmod are flagged as a warning',
+               partial['flag'] == 'warning' and partial['value'] == '1 of 3 URLs have no lastmod', str(partial))
+        result('each problem is a warning in Issues, on the sitemap file',
+               issues[same] == [('warning', copied['value'])] and issues[missing] == [('warning', partial['value'])],
+               str(issues))
     finally:
         a.shutdown()
         b.shutdown()
@@ -1379,7 +1380,7 @@ def test_ai_search_fields_survive_the_database():
 
     fields = {'nosnippet_words': 4, 'raw_word_count': 1, 'rendered_word_count': 132,
               'raw_h1': '', 'raw_internal_links': 0,
-              'ai_search': {'faq': True, 'heading_skips': ['H2 → H4'], 'date_shown': None}}
+              'ai_search': {'intro_words': 12, 'heading_skips': ['H2 → H4'], 'date_shown': None}}
     with temp_crawl_db() as crawl_db:
         crawl_db.save_url_batch(1, [{'url': 'http://example.test/spa', 'status_code': 200, **fields}])
         row = crawl_db.load_crawled_urls(1)[0]
@@ -1817,7 +1818,7 @@ TESTS = (
     test_ai_search_page_facts,
     test_js_head_changes,
     test_ai_search_checks_in_a_crawl,
-    test_sitemap_lastmod_and_llms_txt_rows,
+    test_sitemap_lastmod_row,
     test_new_fields_survive_the_database,
     test_ai_search_fields_survive_the_database,
     test_post_crawl_updates_reach_the_database,
