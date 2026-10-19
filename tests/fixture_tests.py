@@ -26,6 +26,7 @@ import os
 import sys
 import threading
 import time
+from contextlib import contextmanager
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -897,8 +898,9 @@ def test_list_mode():
         a.shutdown()
 
 
-def test_new_fields_survive_the_database():
-    """x_robots_tag and redirected_to must round-trip through a saved crawl."""
+@contextmanager
+def temp_crawl_db():
+    """Point crawl_db at a throwaway database so tests never touch data/users.db"""
     import tempfile
     from src import crawl_db
 
@@ -907,19 +909,38 @@ def test_new_fields_survive_the_database():
         crawl_db.DB_FILE = os.path.join(tmp, 'test.db')
         try:
             crawl_db.init_crawl_tables()
-            crawl_db.save_url_batch(1, [{
-                'url': 'http://example.test/old', 'status_code': 200,
-                'x_robots_tag': 'noindex', 'redirected_to': 'http://example.test/new',
-                'redirects': [{'url': 'http://example.test/old', 'status_code': 301}],
-            }])
-            row = crawl_db.load_crawled_urls(1)[0]
-            result('x_robots_tag and redirected_to are saved and loaded',
-                   row.get('x_robots_tag') == 'noindex'
-                   and row.get('redirected_to') == 'http://example.test/new'
-                   and row.get('redirects') == [{'url': 'http://example.test/old', 'status_code': 301}],
-                   str({k: row.get(k) for k in ('x_robots_tag', 'redirected_to', 'redirects')}))
+            yield crawl_db
         finally:
             crawl_db.DB_FILE = original
+
+
+def test_new_fields_survive_the_database():
+    """x_robots_tag and redirected_to must round-trip through a saved crawl."""
+    with temp_crawl_db() as crawl_db:
+        crawl_db.save_url_batch(1, [{
+            'url': 'http://example.test/old', 'status_code': 200,
+            'x_robots_tag': 'noindex', 'redirected_to': 'http://example.test/new',
+            'redirects': [{'url': 'http://example.test/old', 'status_code': 301}],
+        }])
+        row = crawl_db.load_crawled_urls(1)[0]
+        result('x_robots_tag and redirected_to are saved and loaded',
+               row.get('x_robots_tag') == 'noindex'
+               and row.get('redirected_to') == 'http://example.test/new'
+               and row.get('redirects') == [{'url': 'http://example.test/old', 'status_code': 301}],
+               str({k: row.get(k) for k in ('x_robots_tag', 'redirected_to', 'redirects')}))
+
+
+def test_post_crawl_updates_reach_the_database():
+    """Fields set after rows were saved (linked_from etc.) must update the saved crawl."""
+    with temp_crawl_db() as crawl_db:
+        crawl_db.save_url_batch(1, [{'url': 'http://example.test/a', 'status_code': 200,
+                                     'linked_from': ['http://example.test/']}])
+        crawl_db.update_url_fields(1, [{'url': 'http://example.test/a', 'linked_from': [
+            'http://example.test/', 'http://example.test/b']}], ('linked_from',))
+        row = crawl_db.load_crawled_urls(1)[0]
+        result('a post-crawl update overwrites the saved value',
+               row.get('linked_from') == ['http://example.test/', 'http://example.test/b'],
+               str(row.get('linked_from')))
 
 
 def _playwright_available():
@@ -951,6 +972,7 @@ TESTS = (
     test_duplicate_titles_descriptions_h1s,
     test_list_mode,
     test_new_fields_survive_the_database,
+    test_post_crawl_updates_reach_the_database,
 )
 
 

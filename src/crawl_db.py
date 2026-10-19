@@ -349,6 +349,28 @@ def save_url_batch(crawl_id, urls):
         traceback.print_exc()
         return False
 
+def update_url_fields(crawl_id, urls, fields):
+    """Write fields set after the crawl onto already-saved URL rows"""
+    if not urls:
+        return True
+
+    try:
+        with get_db() as conn:
+            assignments = ', '.join(f'{field} = ?' for field in fields)
+            rows = []
+            for url_data in urls:
+                values = [url_data.get(field) for field in fields]
+                values = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in values]
+                rows.append((*values, crawl_id, url_data['url']))
+
+            conn.executemany(
+                f'UPDATE crawled_urls SET {assignments} WHERE crawl_id = ? AND url = ?', rows)
+            return True
+
+    except Exception as e:
+        print(f"Error updating URL fields: {e}")
+        return False
+
 def save_links_batch(crawl_id, links):
     """Batch save links"""
     if not links:

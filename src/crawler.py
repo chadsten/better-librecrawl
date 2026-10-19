@@ -1021,16 +1021,7 @@ class WebCrawler:
 
         # Skip post-processing if demo limit was hit — no further memory use
         if not self._demo_limit_reached:
-            # Run PageSpeed analysis if enabled
-            if self.config.get('enable_pagespeed', False):
-                print("Running PageSpeed analysis...")
-                self.is_running_pagespeed = True
-                self._run_pagespeed_analysis()
-                self.is_running_pagespeed = False
-
-            # Update all linked_from fields before completing
-            self._update_all_linked_from()
-            self._run_whole_crawl_checks()
+            self._run_post_crawl_steps()
 
         # Save final data and set appropriate status
         if self.db_save_enabled and self.crawl_id:
@@ -1440,19 +1431,10 @@ class WebCrawler:
 
                 await asyncio.sleep(0.001)
 
+        finally:
             # Skip post-processing if demo limit was hit
             if not self._demo_limit_reached:
-                # Run PageSpeed if enabled
-                if self.config.get('enable_pagespeed', False):
-                    self.is_running_pagespeed = True
-                    self._run_pagespeed_analysis()
-                    self.is_running_pagespeed = False
-
-        finally:
-            if not self._demo_limit_reached:
-                # Update all linked_from fields before completing
-                self._update_all_linked_from()
-                self._run_whole_crawl_checks()
+                self._run_post_crawl_steps()
 
             # Save final data and set appropriate status
             if self.db_save_enabled and self.crawl_id:
@@ -1478,6 +1460,30 @@ class WebCrawler:
         if self.config.get('list_mode') or depth >= self.config['max_depth']:
             return False
         return content_is_internal or self.config['crawl_external']
+
+    def _run_post_crawl_steps(self):
+        """Work that needs the whole crawl: API lookups, then cross-page analysis"""
+        if self.config.get('enable_pagespeed', False):
+            print("Running PageSpeed analysis...")
+            self.is_running_pagespeed = True
+            self._run_pagespeed_analysis()
+            self.is_running_pagespeed = False
+
+        self._update_all_linked_from()
+        self._run_whole_crawl_checks()
+
+    def _publish_url_updates(self, results, fields):
+        """Send fields set on result rows after they were crawled to the UI and the saved crawl.
+
+        Pending rows are flushed first so every row exists in the database to update.
+        """
+        if not results:
+            return
+        self.event_log.emit_many('url_update', results)
+        if self.db_save_enabled and self.crawl_id:
+            from src.crawl_db import update_url_fields
+            self._save_batch_to_db(force=True)
+            update_url_fields(self.crawl_id, results, fields)
 
     def _run_whole_crawl_checks(self):
         """Issue checks that compare pages with each other, once the crawl ends"""
@@ -1514,8 +1520,7 @@ class WebCrawler:
                 result['linked_from'] = sources
                 updated.append(result)
 
-        if updated:
-            self.event_log.emit_many('url_update', updated)
+        self._publish_url_updates(updated, ('linked_from',))
         print(f"Updated linked_from data for {len(updated)} URLs")
 
     def _head_check_new_links(self, new_links, result, depth):
