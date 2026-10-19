@@ -781,8 +781,12 @@ def start_crawl():
 
     data = request.get_json()
     url = data.get('url')
+    # List mode sends "urls" (a list) instead of "url"
+    urls = data.get('urls')
 
-    if not url:
+    if urls is not None and not isinstance(urls, list):
+        return jsonify({'success': False, 'error': 'urls must be a list'})
+    if not url and not urls:
         return jsonify({'success': False, 'error': 'URL is required'})
 
     user_id = session.get('user_id')
@@ -822,13 +826,16 @@ def start_crawl():
         crawler.config['demo_memory_limit_bytes'] = int(1.5 * 1024 * 1024 * 1024)  # 1.5GB
 
     # Pass user_id and session_id for database persistence
-    success, message = crawler.start_crawl(url, user_id=user_id, session_id=session_id)
+    if urls:
+        success, message = crawler.start_list_crawl(urls, user_id=user_id, session_id=session_id)
+    else:
+        success, message = crawler.start_crawl(url, user_id=user_id, session_id=session_id)
 
     # Store crawl_id in session
     if success and crawler.crawl_id:
         session['current_crawl_id'] = crawler.crawl_id
         # Also log to old crawl_history for compatibility
-        log_crawl_start(user_id, url)
+        log_crawl_start(user_id, url or crawler.base_url)
 
     return jsonify({'success': success, 'message': message, 'crawl_id': crawler.crawl_id})
 

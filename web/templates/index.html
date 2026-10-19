@@ -30,9 +30,16 @@
 
         <!-- URL Input Section -->
         <section class="url-section">
-            <div class="url-container">
+            <div class="url-container" id="urlContainer">
                 <div class="input-group">
-                    <label for="urlInput" class="input-label">URL to Crawl</label>
+                    <div class="input-label-row">
+                        <label for="urlInput" class="input-label" id="urlInputLabel">URL to Crawl</label>
+                        <div class="mode-switch" role="group" aria-label="Crawl mode">
+                            <button type="button" class="mode-btn" id="spiderModeBtn" aria-pressed="true" onclick="setCrawlMode('spider')">Spider</button>
+                            <button type="button" class="mode-btn" id="listModeBtn" aria-pressed="false" onclick="setCrawlMode('list')">List</button>
+                        </div>
+                        <span class="url-list-count" id="urlListCount">0 URLs</span>
+                    </div>
                     <input
                         type="url"
                         id="urlInput"
@@ -40,6 +47,19 @@
                         placeholder="https://example.com"
                         onkeypress="handleUrlKeypress(event)"
                     >
+                    <textarea
+                        id="urlListInput"
+                        class="url-input url-list-input"
+                        rows="4"
+                        placeholder="Paste URLs, one per line"
+                        oninput="updateUrlListCount()"
+                    ></textarea>
+                    <div class="url-list-tools">
+                        <label class="btn btn-secondary">
+                            Upload .txt / .csv
+                            <input type="file" accept=".txt,.csv,text/plain,text/csv" onchange="loadUrlListFile(this)" hidden>
+                        </label>
+                    </div>
                 </div>
                 <div class="control-buttons">
                     <button id="startBtn" class="btn btn-primary" onclick="toggleCrawl()">

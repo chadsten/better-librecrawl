@@ -104,8 +104,8 @@ def make_handler(routes, hits=None, slow_paths=(), slow_seconds=0.0):
     return Handler
 
 
-def crawl(url, timeout=120, **config):
-    """Run a crawl to completion and return the crawler for inspection."""
+def new_crawler(**config):
+    """A crawler with fast, fixture-friendly settings."""
     crawler = WebCrawler()
     crawler.config.update({
         'delay': 0.02, 'concurrency': 5, 'max_urls': 200, 'max_depth': 4,
@@ -113,14 +113,24 @@ def crawl(url, timeout=120, **config):
         'discover_sitemaps': False, 'respect_robots': False,
     })
     crawler.config.update(config)
+    return crawler
 
-    ok, message = crawler.start_crawl(url)
+
+def finish(crawler, started, timeout=120):
+    """Wait for a started crawl to complete."""
+    ok, message = started
     assert ok, message
     deadline = time.time() + timeout
     while crawler.is_running and time.time() < deadline:
         time.sleep(0.1)
     assert not crawler.is_running, 'crawl did not finish within timeout'
     return crawler
+
+
+def crawl(url, timeout=120, **config):
+    """Run a crawl to completion and return the crawler for inspection."""
+    crawler = new_crawler(**config)
+    return finish(crawler, crawler.start_crawl(url), timeout)
 
 
 def test_cross_domain_redirect():
@@ -807,6 +817,86 @@ def test_page_fetch_is_one_request():
         a.shutdown()
 
 
+def page(title, description='', h1='', head=''):
+    meta = f'<meta name="description" content="{description}">' if description else ''
+    return (f'<html><head><title>{title}</title>{meta}{head}</head>'
+            f'<body><h1>{h1}</h1><p>body</p></body></html>')
+
+
+def test_duplicate_titles_descriptions_h1s():
+    """Indexable pages sharing a title, meta description or H1 are flagged;
+    noindexed and canonicalised pages are left out, as Screaming Frog does."""
+    site = BASE_PORT + 20
+    paths = ['/a', '/b', '/c', '/noindex', '/canon', '/self', '/self2']
+    a = serve(make_handler({
+        '/': html(''.join(f'<a href="{p}">{p}</a>' for p in paths)),
+        '/a': page('Retaining Walls Houston', 'Shared description', 'Walls'),
+        '/b': page('  retaining walls   HOUSTON ', 'Description B', 'walls'),
+        '/c': page('Unique title', 'Shared description', 'Other'),
+        '/noindex': page('Retaining Walls Houston', 'Description N', 'N',
+                         '<meta name="robots" content="noindex">'),
+        '/canon': page('Retaining Walls Houston', 'Description C', 'C',
+                       '<link rel="canonical" href="/a">'),
+        '/self': page('Self canonical', 'Description S', 'S', '<link rel="canonical" href="/self">'),
+        '/self2': page('Self canonical', 'Description S2', 'S2'),
+    }), site)
+    try:
+        crawler = crawl(f'http://127.0.0.1:{site}/')
+
+        def flagged(issue):
+            return sorted(i['url'].rsplit('/', 1)[-1] for i in crawler.issue_detector.detected_issues
+                          if i['issue'] == issue)
+
+        result('duplicate titles match across case and spacing', flagged('Duplicate Title')
+               == ['a', 'b', 'self', 'self2'], str(flagged('Duplicate Title')))
+        result('duplicate meta descriptions are flagged', flagged('Duplicate Meta Description')
+               == ['a', 'c'], str(flagged('Duplicate Meta Description')))
+        result('duplicate H1s are flagged', flagged('Duplicate H1') == ['a', 'b'],
+               str(flagged('Duplicate H1')))
+
+        details = next(i['details'] for i in issues_for(crawler, '/a') if i['issue'] == 'Duplicate Title')
+        result('details name the shared text and the other page',
+               '"Retaining Walls Houston"' in details and details.endswith('/b')
+               and '1 other page ' in details, details)
+    finally:
+        a.shutdown()
+
+
+def test_list_mode():
+    """List mode crawls exactly the listed URLs and follows none of their links."""
+    from src.crawler import clean_url_list
+
+    site = BASE_PORT + 21
+    base = f'http://127.0.0.1:{site}'
+    hits = []
+    a = serve(make_handler({
+        '/': html('<a href="/p1">p1</a>'),
+        '/p1': html('<a href="/p2">p2</a>'),
+        '/p2': html('<p>p2</p>'),
+        '/p3': html('<p>p3</p>'),
+    }, hits=hits), site)
+    try:
+        crawler = new_crawler()
+        finish(crawler, crawler.start_list_crawl([f'{base}/p1', '  ', f'{base}/p3', f'{base}/p1']))
+        crawled = sorted(r['url'].rsplit('/', 1)[-1] for r in crawler.crawl_results)
+        result('only the listed URLs are crawled, once each', crawled == ['p1', 'p3'], str(crawled))
+        result('links on listed pages are not followed', 'GET /p2' not in hits, str(hits))
+        result('discovered counts the list', crawler.stats['discovered'] == 2,
+               str(crawler.stats['discovered']))
+
+        # the same crawler goes back to spidering for a normal crawl
+        hits.clear()
+        finish(crawler, crawler.start_crawl(f'{base}/'))
+        result('a later spider crawl follows links again', 'GET /p2' in hits, str(hits))
+
+        result('url list cleanup', clean_url_list(
+            ['example.com/a', ' ', 'https://example.com/a', 'ftp://x.test/', 'http://b.test/'])
+            == ['https://example.com/a', 'http://b.test/'])
+        result('an empty list is refused', new_crawler().start_list_crawl(['', ' '])[0] is False)
+    finally:
+        a.shutdown()
+
+
 def test_new_fields_survive_the_database():
     """x_robots_tag and redirected_to must round-trip through a saved crawl."""
     import tempfile
@@ -858,6 +948,8 @@ TESTS = (
     test_js_mode_records_redirects_and_header,
     test_link_checks_respect_crawl_delay,
     test_page_fetch_is_one_request,
+    test_duplicate_titles_descriptions_h1s,
+    test_list_mode,
     test_new_fields_survive_the_database,
 )
 

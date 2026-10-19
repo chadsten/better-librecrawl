@@ -83,6 +83,24 @@ def redirect_hops(history):
     """The redirects requests followed, oldest first, as {url, status_code}"""
     return [{'url': str(h.url), 'status_code': h.status_code} for h in history]
 
+
+def clean_url_list(urls):
+    """A list-mode URL list: trimmed, blanks dropped, https:// added where no
+    scheme was given, non-web schemes dropped, duplicates removed (order kept)"""
+    cleaned = []
+    seen = set()
+    for url in urls:
+        url = str(url).strip()
+        if not url:
+            continue
+        if '://' not in url:
+            url = 'https://' + url
+        if not url.startswith(('http://', 'https://')) or url in seen:
+            continue
+        seen.add(url)
+        cleaned.append(url)
+    return cleaned
+
 from src.core.rate_limiter import RateLimiter
 from src.core.seo_extractor import SEOExtractor
 from src.core.link_manager import LinkManager
@@ -316,13 +334,27 @@ class WebCrawler:
 
     def start_crawl(self, url, user_id=None, session_id=None):
         """Start crawling from the given URL"""
+        return self._start([url], user_id, session_id, list_mode=False)
+
+    def start_list_crawl(self, urls, user_id=None, session_id=None):
+        """List mode: crawl exactly these URLs, without following their links"""
+        urls = clean_url_list(urls)
+        if not urls:
+            return False, "No valid URLs in the list"
+        return self._start(urls, user_id, session_id, list_mode=True)
+
+    def _start(self, urls, user_id, session_id, list_mode):
+        """Start a crawl seeded with urls. The first URL sets the site the
+        crawl treats as internal."""
         if self.is_running:
             return False, "Crawl already in progress"
 
         try:
-            # Validate and normalize URL
-            if not url.startswith(('http://', 'https://')):
-                url = 'https://' + url
+            urls = [url if url.startswith(('http://', 'https://')) else 'https://' + url
+                    for url in urls]
+            url = urls[0]
+            # Saved with the config, so a resumed crawl stays in list mode
+            self.config['list_mode'] = list_mode
 
             parsed = urlparse(url)
             self.base_url = f"{parsed.scheme}://{parsed.netloc}"
@@ -348,14 +380,15 @@ class WebCrawler:
             # Reset state
             self._reset_state()
 
-            # Add initial URL
-            self.link_manager.add_url(url, 0)
-            self.stats['discovered'] = 1
+            # Seed the queue. Seeds skip the URL filters: they were asked for
+            for seed in urls:
+                self.link_manager.add_url(seed, 0)
+            self.stats['discovered'] = self.link_manager.get_stats()['discovered']
 
             # Discover sitemaps in the background so the crawl (and the UI)
             # starts immediately — sitemap probes can take many seconds on
             # slow sites and used to block this request until they finished
-            if self.config.get('discover_sitemaps', True):
+            if self.config.get('discover_sitemaps', True) and not list_mode:
                 self._sitemap_discovery_done = False
                 threading.Thread(target=self._discover_sitemaps_background,
                                  args=(url,), daemon=True).start()
@@ -997,13 +1030,7 @@ class WebCrawler:
 
             # Update all linked_from fields before completing
             self._update_all_linked_from()
-
-            # Run duplication detection on all crawled content
-            if self.issue_detector and self.config.get('enable_duplication_check', True):
-                print("Running duplication detection...")
-                duplication_threshold = self.config.get('duplication_threshold', 0.85)
-                self._detect_duplication_issues(duplication_threshold)
-                print(f"Duplication detection complete. Total issues: {len(self.issue_detector.get_issues())}")
+            self._run_whole_crawl_checks()
 
         # Save final data and set appropriate status
         if self.db_save_enabled and self.crawl_id:
@@ -1167,16 +1194,7 @@ class WebCrawler:
                     if self.db_save_enabled:
                         self.unsaved_links.extend(new_links)
 
-                # Extract links for further crawling. Gate on where the
-                # content actually lives: a page that redirected off-domain
-                # is external content and shouldn't seed the queue unless
-                # external crawling is enabled
-                should_extract = (
-                    (content_is_internal and depth < self.config['max_depth']) or
-                    (self.config['crawl_external'] and depth < self.config['max_depth'])
-                )
-
-                if should_extract:
+                if self._follows_links_from(depth, content_is_internal):
                     self.link_manager.extract_links(soup, url, depth + 1, self._should_crawl_url,
                                                     include_images=self.config.get('crawl_images', False),
                                                     base_url=final_url)
@@ -1308,14 +1326,7 @@ class WebCrawler:
                 if self.db_save_enabled:
                     self.unsaved_links.extend(new_links)
 
-            # Extract links for further crawling. Gated on
-            # where the content lives, as in the HTTP path.
-            should_extract = (
-                (content_is_internal and depth < self.config['max_depth']) or
-                (self.config['crawl_external'] and depth < self.config['max_depth'])
-            )
-
-            if should_extract:
+            if self._follows_links_from(depth, content_is_internal):
                 self.link_manager.extract_links(soup, url, depth + 1, self._should_crawl_url,
                                                 include_images=self.config.get('crawl_images', False),
                                                 base_url=final_url)
@@ -1441,13 +1452,7 @@ class WebCrawler:
             if not self._demo_limit_reached:
                 # Update all linked_from fields before completing
                 self._update_all_linked_from()
-
-                # Run duplication detection on all crawled content
-                if self.issue_detector and self.config.get('enable_duplication_check', True):
-                    print("Running duplication detection...")
-                    duplication_threshold = self.config.get('duplication_threshold', 0.85)
-                    self._detect_duplication_issues(duplication_threshold)
-                    print(f"Duplication detection complete. Total issues: {len(self.issue_detector.get_issues())}")
+                self._run_whole_crawl_checks()
 
             # Save final data and set appropriate status
             if self.db_save_enabled and self.crawl_id:
@@ -1463,10 +1468,34 @@ class WebCrawler:
             self.is_running = False
             print(f"Crawl completed. Discovered: {self.stats['discovered']}, Crawled: {self.stats['crawled']}")
 
-    def _detect_duplication_issues(self, duplication_threshold):
-        """Run duplication detection and journal/track/batch the new issues"""
+    def _follows_links_from(self, depth, content_is_internal):
+        """Whether a page's links join the crawl queue.
+
+        Gated on where the content actually lives: a page that redirected
+        off-domain is external content and only seeds the queue when external
+        crawling is on. List mode crawls just the listed URLs.
+        """
+        if self.config.get('list_mode') or depth >= self.config['max_depth']:
+            return False
+        return content_is_internal or self.config['crawl_external']
+
+    def _run_whole_crawl_checks(self):
+        """Issue checks that compare pages with each other, once the crawl ends"""
+        if not self.issue_detector:
+            return
+
+        self._add_whole_crawl_issues(self.issue_detector.detect_duplicate_element_issues)
+
+        if self.config.get('enable_duplication_check', True):
+            print("Running duplication detection...")
+            self._add_whole_crawl_issues(self.issue_detector.detect_duplication_issues,
+                                         self.config.get('duplication_threshold', 0.85))
+            print(f"Duplication detection complete. Total issues: {len(self.issue_detector.get_issues())}")
+
+    def _add_whole_crawl_issues(self, check, *args):
+        """Run a whole-crawl check and journal/track/batch the issues it adds"""
         issues_before = len(self.issue_detector.detected_issues)
-        self.issue_detector.detect_duplication_issues(self.crawl_results, duplication_threshold)
+        check(self.crawl_results, *args)
         new_issues = self.issue_detector.detected_issues[issues_before:]
         if new_issues:
             self.event_log.emit_many('issue', new_issues)

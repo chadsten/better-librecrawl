@@ -5,7 +5,9 @@ import threading
 import time
 from collections import defaultdict
 from fnmatch import fnmatch
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
+
+from src.core.link_manager import normalize_url
 
 # Near-duplicate detection is bounded so a large site can never hold a crawl in
 # "finishing up" indefinitely: when the budget is exhausted the pass stops with
@@ -19,6 +21,14 @@ _TOKEN_SPLIT = re.compile(r'[^\w]+')
 # the colon does not mean a crawler name ("bingbot: noindex")
 _ROBOTS_DIRECTIVES_WITH_VALUES = {'max-snippet', 'max-image-preview', 'max-video-preview',
                                   'unavailable_after'}
+
+# Page elements checked for exact duplicates across indexable pages:
+# (result key, issue name, how the details name it)
+_DUPLICATE_ELEMENTS = (
+    ('title', 'Duplicate Title', 'title'),
+    ('meta_description', 'Duplicate Meta Description', 'meta description'),
+    ('h1', 'Duplicate H1', 'H1'),
+)
 
 
 def has_alt_attribute(image):
@@ -462,6 +472,68 @@ class IssueDetector:
                     'details': f'Image returned {status}: {img_url}'
                 })
 
+    def detect_duplicate_element_issues(self, all_results):
+        """Flag indexable pages that share a title, meta description or H1.
+
+        Matching ignores case and extra whitespace, and blanks are skipped
+        (the Missing ... checks cover those). As in Screaming Frog, only
+        indexable pages count: a noindexed page, or one that canonicalises
+        to another URL, sharing a title is expected rather than a problem.
+        One issue per page and element, naming a few of the pages it matches.
+        """
+        pages = [result for result in all_results if self._is_indexable_page(result)]
+        issues = []
+
+        for key, issue, label in _DUPLICATE_ELEMENTS:
+            groups = defaultdict(list)
+            for page in pages:
+                text = self._normalise_text(page.get(key))
+                if text:
+                    groups[text].append(page)
+
+            for group in groups.values():
+                if len(group) < 2:
+                    continue
+                others = len(group) - 1
+                for page in group:
+                    text = ' '.join(self._first_text(page.get(key)).split())
+                    examples = [p['url'] for p in group[:DUPLICATION_EXAMPLES_PER_PAGE + 1]
+                                if p is not page][:DUPLICATION_EXAMPLES_PER_PAGE]
+                    more = others - len(examples)
+                    issues.append({
+                        'url': page['url'],
+                        'type': 'warning',
+                        'category': 'SEO',
+                        'issue': issue,
+                        'details': f"Same {label} as {others} other page{'s' if others != 1 else ''} "
+                                   f"(\"{text}\"): " + ', '.join(examples)
+                                   + (f" (+{more} more)" if more > 0 else '')
+                    })
+
+        with self.issues_lock:
+            self.detected_issues.extend(issues)
+
+    def _is_indexable_page(self, result):
+        """An internal HTML page that loaded, isn't noindex and doesn't
+        canonicalise to a different URL"""
+        url = result.get('url', '')
+        status = result.get('status_code') or 0
+        if not url or not result.get('is_internal') or not 200 <= status < 300:
+            return False
+        content_type = (result.get('content_type') or '').lower()
+        if (content_type and 'html' not in content_type) or self._should_exclude(url):
+            return False
+        directives = robots_directives(result.get('robots')) | robots_directives(result.get('x_robots_tag'))
+        if 'noindex' in directives:
+            return False
+
+        canonical = result.get('canonical_url')
+        if canonical:
+            landed = result.get('redirected_to') or url
+            if normalize_url(urljoin(landed, canonical)) not in (normalize_url(url), normalize_url(landed)):
+                return False
+        return True
+
     def detect_duplication_issues(self, all_results, similarity_threshold=0.85):
         """
         Flag pages whose title, meta description, H1 and length are near-identical
@@ -590,13 +662,16 @@ class IssueDetector:
         }
 
     @staticmethod
-    def _normalise_text(value):
-        """Lower-cased, whitespace-collapsed text; H1 may arrive as a list."""
+    def _first_text(value):
+        """A field's text; H1 may arrive as a list."""
         if isinstance(value, list):
             value = next((v for v in value if isinstance(v, str) and v.strip()), '')
-        if not isinstance(value, str):
-            return ''
-        return ' '.join(value.lower().split())
+        return value if isinstance(value, str) else ''
+
+    @classmethod
+    def _normalise_text(cls, value):
+        """Lower-cased, whitespace-collapsed text."""
+        return ' '.join(cls._first_text(value).lower().split())
 
     @staticmethod
     def _tokens(text):

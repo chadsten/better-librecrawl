@@ -69,21 +69,31 @@ body {
     padding: 20px;
 }
 
+/* Label row on top, then the URL field (or the list box) with the crawl
+   buttons beside it, then the list tools under the box */
 .url-container {
-    display: flex;
-    align-items: flex-end;
-    gap: 16px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    column-gap: 16px;
     max-width: 1200px;
     margin: 0 auto;
 }
 
 .input-group {
-    flex: 1;
+    display: contents;
+}
+
+.input-label-row {
+    grid-column: 1;
+    grid-row: 1;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 6px;
 }
 
 .input-label {
     display: block;
-    margin-bottom: 6px;
     font-weight: 600;
     color: #f1f5f9;
     font-size: 13px;
@@ -102,6 +112,8 @@ body {
 }
 
 .url-input {
+    grid-column: 1;
+    grid-row: 2;
     width: 100%;
     padding: 14px 18px;
     background: rgba(255, 255, 255, 0.08);
@@ -126,8 +138,83 @@ body {
 }
 
 .control-buttons {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: end;
     display: flex;
     gap: 8px;
+}
+
+/* Spider / List switch */
+.mode-switch {
+    display: inline-flex;
+    border: 1px solid #64748b;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.mode-btn {
+    background: none;
+    border: none;
+    padding: 3px 10px;
+    color: #94a3b8;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.mode-btn:hover {
+    color: #e2e8f0;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.mode-btn[aria-pressed="true"] {
+    color: #c4b5fd;
+    background: rgba(139, 92, 246, 0.2);
+}
+
+/* List mode swaps the URL field for the list box and its tools */
+.url-list-count {
+    display: none;
+    margin-left: auto;
+    color: #94a3b8;
+    font-size: 13px;
+}
+
+.url-list-input {
+    display: none;
+    min-height: 100px;
+    resize: vertical;
+    font-family: inherit;
+    line-height: 1.5;
+}
+
+.url-list-tools {
+    display: none;
+    grid-column: 1;
+    grid-row: 3;
+    margin-top: 8px;
+}
+
+.url-container.list-mode #urlInput {
+    display: none;
+}
+
+.url-container.list-mode .url-list-count {
+    display: inline;
+}
+
+.url-container.list-mode .url-list-input {
+    display: block;
+}
+
+.url-container.list-mode .url-list-tools {
+    display: flex;
+}
+
+.url-container.list-mode .control-buttons {
+    align-self: start;
 }
 
 .progress-container {
@@ -810,12 +897,14 @@ body {
     }
 
     .url-container {
-        flex-direction: column;
-        align-items: stretch;
-        gap: 12px;
+        grid-template-columns: 1fr;
     }
 
-    .control-buttons {
+    .control-buttons,
+    .url-container.list-mode .control-buttons {
+        grid-column: 1;
+        grid-row: 4;
+        margin-top: 12px;
         justify-content: stretch;
         flex-wrap: wrap;
     }

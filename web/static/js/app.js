@@ -197,31 +197,13 @@ function toggleCrawl() {
 }
 
 function startCrawl() {
-    const urlInput = document.getElementById('urlInput');
-    let url = urlInput.value.trim();
-
-    if (!url) {
-        alert('Please enter a URL to crawl');
-        urlInput.focus();
-        return;
-    }
-
-    // Normalize the URL - add protocol if missing
-    url = normalizeUrl(url);
-
-    if (!isValidUrl(url)) {
-        alert('Please enter a valid URL or domain');
-        urlInput.focus();
-        return;
-    }
-
-    // Update the input field with the normalized URL
-    urlInput.value = url;
+    const target = crawlMode === 'list' ? listCrawlTarget() : spiderCrawlTarget();
+    if (!target) return;
 
     crawlState.isRunning = true;
     crawlState.isPaused = false;
     crawlState.startTime = new Date();
-    crawlState.baseUrl = url;
+    crawlState.baseUrl = target.baseUrl;
 
     // Initialize incremental poller for new crawl
     if (!incrementalPoller) {
@@ -239,7 +221,98 @@ function startCrawl() {
     resetStats();
 
     // Start the actual crawling via Python backend
-    startPythonCrawl(url);
+    startPythonCrawl(target.request);
+}
+
+// The start URL for a spider crawl, normalised; null (after telling the
+// user why) when there isn't a valid one
+function spiderCrawlTarget() {
+    const urlInput = document.getElementById('urlInput');
+    let url = urlInput.value.trim();
+
+    if (!url) {
+        alert('Please enter a URL to crawl');
+        urlInput.focus();
+        return null;
+    }
+
+    // Normalize the URL - add protocol if missing
+    url = normalizeUrl(url);
+
+    if (!isValidUrl(url)) {
+        alert('Please enter a valid URL or domain');
+        urlInput.focus();
+        return null;
+    }
+
+    // Update the input field with the normalized URL
+    urlInput.value = url;
+    return { request: { url }, baseUrl: url };
+}
+
+// The URLs for a list-mode crawl; null (after telling the user) when empty
+function listCrawlTarget() {
+    const listInput = document.getElementById('urlListInput');
+    const urls = parseUrlList(listInput.value);
+
+    if (!urls.length) {
+        alert('Please enter at least one URL to crawl');
+        listInput.focus();
+        return null;
+    }
+    return { request: { urls }, baseUrl: urls[0] };
+}
+
+// ========================================
+// List mode
+// ========================================
+
+let crawlMode = 'spider';
+
+function setCrawlMode(mode) {
+    crawlMode = mode;
+    const listMode = mode === 'list';
+    document.getElementById('urlContainer').classList.toggle('list-mode', listMode);
+    document.getElementById('spiderModeBtn').setAttribute('aria-pressed', String(!listMode));
+    document.getElementById('listModeBtn').setAttribute('aria-pressed', String(listMode));
+
+    const label = document.getElementById('urlInputLabel');
+    label.textContent = listMode ? 'URLs to Crawl' : 'URL to Crawl';
+    label.htmlFor = listMode ? 'urlListInput' : 'urlInput';
+}
+
+// URLs from pasted text or an uploaded .txt/.csv: every http(s) URL found,
+// plus bare domains or paths on a line of their own (https:// is added).
+// Duplicates are dropped, first occurrence kept.
+function parseUrlList(text) {
+    const urls = [];
+    for (const line of text.split(/\r?\n/)) {
+        const found = line.match(/https?:\/\/[^\s,;"'<>]+/gi);
+        const bare = line.trim();
+        if (found) {
+            urls.push(...found);
+        } else if (/^[^\s,;"'<>]+\.[^\s,;"'<>]+$/.test(bare)) {
+            urls.push(normalizeUrl(bare));
+        }
+    }
+    return [...new Set(urls)].filter(isValidUrl);
+}
+
+function updateUrlListCount() {
+    const count = parseUrlList(document.getElementById('urlListInput').value).length;
+    document.getElementById('urlListCount').textContent = `${count} URL${count === 1 ? '' : 's'}`;
+}
+
+// Fill the list box with the URLs found in a .txt or .csv file
+function loadUrlListFile(input) {
+    const file = input.files[0];
+    input.value = ''; // so picking the same file again still fires change
+    if (!file) return;
+
+    file.text().then(text => {
+        document.getElementById('urlListInput').value = parseUrlList(text).join('\n');
+        updateUrlListCount();
+    });
 }
 
 function pauseCrawl() {
@@ -339,19 +412,22 @@ function clearCrawlData() {
     hideProgress();
     updateCrawlButtons(); // Update save/load button states
 
-    // Reset URL input
+    // Reset URL inputs
     document.getElementById('urlInput').value = '';
-    document.getElementById('urlInput').focus();
+    document.getElementById('urlListInput').value = '';
+    updateUrlListCount();
+    document.getElementById(crawlMode === 'list' ? 'urlListInput' : 'urlInput').focus();
 }
 
-function startPythonCrawl(url) {
+// request is { url } for a spider crawl or { urls } for list mode
+function startPythonCrawl(request) {
     // Call Python backend to start crawling
     fetch('/api/start_crawl', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ url: url })
+        body: JSON.stringify(request)
     })
     .then(response => response.json())
     .then(data => {
