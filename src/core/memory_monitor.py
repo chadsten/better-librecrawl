@@ -1,6 +1,5 @@
 """Memory usage monitoring for crawler instances"""
 import psutil
-import sys
 import threading
 from datetime import datetime
 

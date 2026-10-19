@@ -49,7 +49,7 @@ LibreCrawlPlugin.register({
 
     // Main render function
     render(container, data) {
-        const { urls, links } = data;
+        const { urls } = data;
 
         if (!urls || urls.length === 0) {
             container.innerHTML = this.renderEmptyState();
@@ -57,12 +57,12 @@ LibreCrawlPlugin.register({
         }
 
         // Analyze E-E-A-T signals
-        const analysis = this.analyzeEEAT(urls, links);
+        const analysis = this.analyzeEEAT(urls);
 
         // Render the analysis
         container.innerHTML = `
             <div class="plugin-content" style="padding: 20px; overflow-y: auto; max-height: calc(100vh - 280px);">
-                ${this.renderHeader(analysis)}
+                ${this.renderHeader()}
                 ${this.renderScoreCards(analysis)}
                 ${this.renderSignalsBreakdown(analysis)}
                 ${this.renderTopPages(analysis)}
@@ -72,7 +72,7 @@ LibreCrawlPlugin.register({
     },
 
     // Render header section
-    renderHeader(analysis) {
+    renderHeader() {
         return `
             <div class="plugin-header" style="margin-bottom: 32px;">
                 <h2 style="font-size: 28px; font-weight: 700; margin-bottom: 8px; color: #e5e7eb;">
@@ -87,7 +87,6 @@ LibreCrawlPlugin.register({
 
     // Render score cards
     renderScoreCards(analysis) {
-        const scoreClass = this.getScoreClass(analysis.overallScore);
         const scoreColor = this.getScoreColor(analysis.overallScore);
 
         return `
@@ -299,7 +298,7 @@ LibreCrawlPlugin.register({
     },
 
     // Analyze E-E-A-T signals across all URLs
-    analyzeEEAT(urls, links) {
+    analyzeEEAT(urls) {
         let totalScore = 0;
         let pagesWithAuthor = 0;
         let pagesWithSchema = 0;
@@ -452,13 +451,6 @@ LibreCrawlPlugin.register({
         }
 
         return recommendations;
-    },
-
-    // Helper: Get score class
-    getScoreClass(score) {
-        if (score >= 80) return 'score-good';
-        if (score >= 60) return 'score-needs-improvement';
-        return 'score-poor';
     },
 
     // Helper: Get score color

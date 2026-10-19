@@ -1,0 +1,7 @@
+{
+  "minTokens": 50,
+  "minLines": 6,
+  "format": ["javascript", "python"],
+  "ignore": ["**/node_modules/**"],
+  "reporters": ["console"]
+}

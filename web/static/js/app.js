@@ -1424,12 +1424,6 @@ function filterVirtualScrollerData(scrollerName, filterType) {
     scroller.setData(filteredData);
 }
 
-// Legacy function - kept for compatibility but no longer used
-function filterTable(tableBodyId, filterType) {
-    // This function is deprecated in favor of filterVirtualScrollerData
-    // Kept for backwards compatibility only
-}
-
 function isInternalURL(url) {
     if (!url || !crawlState.baseUrl) return false;
     try {
@@ -1441,7 +1435,7 @@ function isInternalURL(url) {
         const baseDomain = baseObj.hostname.replace('www.', '');
 
         return urlDomain === baseDomain;
-    } catch (e) {
+    } catch {
         return false;
     }
 }
@@ -1659,7 +1653,7 @@ function isValidUrl(string) {
         const url = new URL(string);
         // Check if it has a valid protocol and hostname
         return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname.length > 0;
-    } catch (_) {
+    } catch {
         return false;
     }
 }
@@ -2437,7 +2431,7 @@ function loadCrawl() {
                                 const urlDomain = new URL(url.url).hostname.replace('www.', '');
                                 const baseDomain = new URL(crawlState.baseUrl).hostname.replace('www.', '');
                                 url.is_internal = urlDomain === baseDomain;
-                            } catch (e) {
+                            } catch {
                                 url.is_internal = false;
                             }
                         }

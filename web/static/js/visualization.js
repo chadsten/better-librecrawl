@@ -233,11 +233,12 @@ function updateGraph() {
             const statusCode = node.data.status_code;
 
             switch (currentFilter) {
-                case 'html':
+                case 'html': {
                     // Only show HTML pages (typically 2xx with no file extension or .html)
                     const url = node.data.url;
                     return statusCode >= 200 && statusCode < 300 &&
                            (url.endsWith('/') || url.endsWith('.html') || url.endsWith('.htm') || !url.includes('.'));
+                }
                 case '2xx':
                     return statusCode >= 200 && statusCode < 300;
                 case '3xx':

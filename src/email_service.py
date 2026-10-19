@@ -5,7 +5,7 @@ import smtplib
 import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Optional, Tuple
+from typing import Tuple
 
 # Load environment variables
 def get_env(key: str, default: str = '') -> str:
@@ -46,11 +46,9 @@ def send_verification_email(to_email: str, username: str, token: str, app_source
         # Determine which app to link to
         if app_source == 'workshop':
             app_name = "LibreCrawl Plugin Workshop"
-            app_url = WORKSHOP_APP_URL
             verify_url = f"{WORKSHOP_APP_URL}/verify?token={token}"
         else:
             app_name = "LibreCrawl"
-            app_url = MAIN_APP_URL
             verify_url = f"{MAIN_APP_URL}/verify?token={token}"
 
         # Create message
@@ -99,7 +97,7 @@ The LibreCrawl Team
 
         # HTML version
         if is_resend:
-            resend_notice = f"""
+            resend_notice = """
         <div style="background: #fef3c7; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #f59e0b;">
             <strong>Note:</strong> We received a new registration request for this email address. Since your previous registration was not verified, we've updated your account with the new username and password you provided.
         </div>"""

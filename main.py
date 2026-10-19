@@ -17,7 +17,7 @@ from flask_compress import Compress
 from functools import wraps
 from src.crawler import WebCrawler
 from src.settings_manager import SettingsManager
-from src.auth_db import init_db, create_user, authenticate_user, get_user_by_id, log_guest_crawl, get_guest_crawls_last_24h, verify_user, set_user_tier, create_verification_token, verify_token, get_user_by_email, get_or_create_zoho_user
+from src.auth_db import init_db, create_user, authenticate_user, log_guest_crawl, get_guest_crawls_last_24h, create_verification_token, verify_token, get_user_by_email, get_or_create_zoho_user
 from src.email_service import send_verification_email, send_welcome_email
 from src.zoho_oauth import ZohoOAuthConfig, ZohoOAuthError
 
@@ -777,7 +777,7 @@ def debug_memory_page():
 @app.route('/api/start_crawl', methods=['POST'])
 @login_required
 def start_crawl():
-    from src.auth_db import get_crawls_last_24h, log_crawl_start
+    from src.auth_db import log_crawl_start
 
     data = request.get_json()
     url = data.get('url')
@@ -1904,7 +1904,7 @@ def recover_crashed_crawls():
             for crawl in crashed:
                 set_crawl_status(crawl['id'], 'failed')
                 print(f"Found crashed crawl: {crawl['base_url']} (ID: {crawl['id']})")
-                print(f"  → Marked as failed. User can resume from dashboard.")
+                print("  → Marked as failed. User can resume from dashboard.")
             print("=" * 60 + "\n")
     except Exception as e:
         print(f"Error during crash recovery: {e}")
@@ -1955,12 +1955,12 @@ def main():
     print("=" * 60)
     print("LibreCrawl - SEO Spider")
     print("=" * 60)
-    print(f"\n🚀 Server starting on http://0.0.0.0:5000")
-    print(f"🌐 Access from browser: http://localhost:5000")
-    print(f"📱 Access from network: http://<your-ip>:5000")
-    print(f"\n✨ Multi-tenancy enabled - each browser session is isolated")
-    print(f"💾 Settings stored in browser localStorage")
-    print(f"\nPress Ctrl+C to stop the server\n")
+    print("\n🚀 Server starting on http://0.0.0.0:5000")
+    print("🌐 Access from browser: http://localhost:5000")
+    print("📱 Access from network: http://<your-ip>:5000")
+    print("\n✨ Multi-tenancy enabled - each browser session is isolated")
+    print("💾 Settings stored in browser localStorage")
+    print("\nPress Ctrl+C to stop the server\n")
     print("=" * 60 + "\n")
 
     # Open browser in a separate thread after short delay

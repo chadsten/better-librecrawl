@@ -1,6 +1,3 @@
-import json
-import os
-from pathlib import Path
 
 class SettingsManager:
     def __init__(self, session_id=None, user_id=None, tier='guest'):

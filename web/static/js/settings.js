@@ -643,7 +643,7 @@ function validateSettings(settings) {
     if (settings.enableProxy && settings.proxyUrl) {
         try {
             new URL(settings.proxyUrl);
-        } catch (e) {
+        } catch {
             errors.push('Invalid proxy URL format');
         }
     }
@@ -778,7 +778,7 @@ function importSettings(event) {
             populateSettingsForm();
             showNotification('Settings imported successfully', 'success');
 
-        } catch (error) {
+        } catch {
             alert('Invalid settings file format');
         }
     };

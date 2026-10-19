@@ -3,13 +3,14 @@ Main web crawler orchestrator with smooth rate limiting and modular architecture
 Refactored for better code practices and maintainability.
 """
 import requests
+from requests.adapters import HTTPAdapter
 import socket
 import ssl
 import threading
 import time
 import asyncio
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
 from protego import Protego
@@ -223,7 +224,7 @@ class WebCrawler:
         paying a fresh TCP and TLS handshake for the next request to that host.
         """
         size = max(10, int(concurrency) + HEAD_CHECK_WORKERS + 5)
-        adapter = requests.adapters.HTTPAdapter(
+        adapter = HTTPAdapter(
             pool_connections=size, pool_maxsize=size, max_retries=0)
         self.session.mount('http://', adapter)
         self.session.mount('https://', adapter)
@@ -586,7 +587,7 @@ class WebCrawler:
             # Load already crawled URLs from database
             from src.crawl_db import load_crawl_links, load_crawl_issues
 
-            print(f"Loading crawled data from database...")
+            print("Loading crawled data from database...")
             self.crawl_results = load_crawled_urls(crawl_id)
 
             # Mark all crawled URLs as discovered to prevent re-discovery
@@ -1225,8 +1226,6 @@ class WebCrawler:
 
     async def _crawl_url_with_javascript(self, url, depth):
         """Crawl a single URL using JavaScript rendering"""
-        start_time = time.time()
-
         try:
             # Render page with JavaScript
             html_content, status_code, error, final_url, page_info = \

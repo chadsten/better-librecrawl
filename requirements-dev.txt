@@ -1,0 +1,3 @@
+# Python dev tools for npm run lint and the audit scripts (not used by the app).
+ruff==0.17.1
+vulture==2.16

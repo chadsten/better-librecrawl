@@ -6,7 +6,6 @@ crawler instance (i.e. per user session).
 """
 import sys
 import gc
-import json
 import threading
 from collections import defaultdict
 

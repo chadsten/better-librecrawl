@@ -1,0 +1,22 @@
+{
+  "name": "librecrawl-dev-tools",
+  "private": true,
+  "description": "Lint and audit tools for development only. The app itself has no Node dependencies.",
+  "scripts": {
+    "lint": "eslint . && python -m ruff check",
+    "typecheck": "pyright",
+    "audit:dead": "python -m vulture",
+    "audit:dupes": "jscpd src main.py web/static",
+    "audit:complexity": "npm run audit:complexity:js && npm run audit:complexity:py",
+    "audit:complexity:js": "eslint -c eslint.audit.config.mjs .",
+    "audit:complexity:py": "python -m ruff check --config ruff.audit.toml --exit-zero"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.13.0",
+    "eslint-plugin-sonarjs": "4.2.2",
+    "globals": "17.13.0",
+    "jscpd": "5.4.1",
+    "pyright": "1.1.414"
+  }
+}

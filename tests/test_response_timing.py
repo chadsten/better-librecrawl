@@ -2,7 +2,7 @@
 
 import unittest
 from datetime import timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from src.crawler import WebCrawler
 

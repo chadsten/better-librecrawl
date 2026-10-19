@@ -5,8 +5,6 @@ Enables crash recovery and historical crawl access
 """
 import sqlite3
 import json
-import time
-from datetime import datetime
 from contextlib import contextmanager
 from src.integrations import moz
 

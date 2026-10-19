@@ -146,7 +146,7 @@ def test_cross_domain_redirect():
     """A page that redirects off-domain must not mint internal URLs."""
     site_a, site_b = BASE_PORT, BASE_PORT + 1
     a = serve(make_handler({
-        '/': html(f'<a href="/go">offsite</a><a href="/local.html">local</a>'),
+        '/': html('<a href="/go">offsite</a><a href="/local.html">local</a>'),
         '/local.html': html('<p>local page</p>'),
         '/go': (302, f'http://127.0.0.1:{site_b}/landing'),
     }), site_a)

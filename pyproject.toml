@@ -1,0 +1,35 @@
+# Settings for the dev tools that package.json runs. The app itself installs
+# from requirements.txt inside Docker; the tools come from requirements-dev.txt.
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# The lint gate: undefined and unused names, and syntax errors.
+# ruff.audit.toml adds the review rules on top.
+select = ["F", "E9"]
+
+[tool.vulture]
+paths = ["src", "main.py", "tests"]
+min_confidence = 60
+# Flask calls the route handlers.
+ignore_decorators = ["@app.route"]
+# Names that sqlite3, Flask, requests, signal and the test servers'
+# http.server handlers read or call.
+ignore_names = [
+  "row_factory", "permanent", "secret_key", "proxies",
+  "signum", "frame",
+  "protocol_version", "log_message", "do_*",
+]
+
+[tool.pyright]
+include = ["src", "main.py"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+# The app's packages are installed in the Docker image, not on the host.
+reportMissingImports = "none"
+reportMissingModuleSource = "none"
+# Many attributes start as None in __init__ and are set before they are used,
+# which basic mode can't follow.
+reportOptionalMemberAccess = "none"
+reportOptionalSubscript = "none"

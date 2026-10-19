@@ -1,0 +1,25 @@
+# Review rules for npm run audit:complexity. The script passes --exit-zero:
+# these findings are input for a code review, not a gate.
+extend = "pyproject.toml"
+output-format = "concise"
+
+[lint]
+extend-select = [
+  "C90",           # function complexity
+  "PLR09",         # too many returns, branches, arguments or statements
+  "SIM",           # collapsible ifs, needless bools, branches with the same body
+  "RET",           # assign-then-return, else after return
+  "PIE",           # needless pass, duplicate class fields
+  "TRY201",        # raise e instead of raise
+  "TRY203",        # except that only re-raises
+  "S110", "S112",  # except that silently passes or continues
+  "B",             # likely bugs
+  "E4", "E7",      # imports not at the top, bare except, ambiguous names
+  "C4",            # comprehensions that can be simpler
+  "UP",            # syntax older than Python 3.11
+  "ERA",           # commented-out code
+  "RUF",           # unused noqa and other ruff checks
+]
+
+[lint.mccabe]
+max-complexity = 15
