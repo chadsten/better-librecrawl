@@ -8,6 +8,7 @@ import json
 import time
 from datetime import datetime
 from contextlib import contextmanager
+from src.integrations import moz
 
 # Database file location (same as auth database) - stored in data/ for Docker volume persistence
 import os
@@ -149,6 +150,12 @@ def init_crawl_tables():
             cursor.execute('ALTER TABLE crawled_urls ADD COLUMN link_score INTEGER')
         except sqlite3.OperationalError:
             pass  # Column already exists
+        # Migration: Moz metrics, set after the crawl
+        for column, column_type in moz.METRICS.values():
+            try:
+                cursor.execute(f'ALTER TABLE crawled_urls ADD COLUMN {column} {column_type}')
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
         # Links table
         cursor.execute('''

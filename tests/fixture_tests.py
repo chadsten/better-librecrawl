@@ -22,11 +22,14 @@ means a real regression rather than a flaky expectation:
      and never repeats a row, even while a client polls during the crawl
 """
 import http.server
+import json
 import os
 import sys
 import threading
 import time
+import zlib
 from contextlib import contextmanager
+from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -1133,6 +1136,267 @@ def test_open_pagerank_failures():
         a.shutdown()
         fake.shutdown()
         silent.close()
+# Error objects as the Moz API documents them (https://moz.com/api/docs/guides/error-handling)
+MOZ_QUOTA_ERROR = (403, {
+    'code': -32670, 'status': 403,
+    'data': {'explanation': 'account does not have sufficient quota', 'issue': 'insufficient-quota'},
+    'message': 'The account does not have enough quota remaining for current period.'})
+MOZ_AUTH_ERROR = (401, {'code': -32651, 'status': 401, 'data': {},
+                        'message': 'Missing or invalid authentication'})
+MOZ_RATE_LIMITED = (429, {
+    'code': -32658, 'status': 429,
+    'data': {'explanation': 'Rate limit for the given action has been exceeded.',
+             'issue': 'rate_limited', 'value': 0},
+    'message': 'You have exceeded the request rate limit. Please slow down and try again.'})
+MOZ_SERVER_ERROR = (500, {'code': -32603, 'httpStatus': 500, 'data': {}, 'message': 'Internal error'})
+
+
+def fake_moz_metrics(url):
+    """Distinct, repeatable metrics for a URL, so a test can tell which row got which"""
+    n = zlib.crc32(url.encode())
+    return {'moz_page_authority': n % 100 + 1, 'moz_domain_authority': 42, 'moz_spam_score': n % 18,
+            'moz_linking_domains': n % 1000, 'moz_inbound_links': n % 10000}
+
+
+def fake_moz_result(url):
+    """One results_by_site entry, shaped like the documented example: the query
+    echoed with a root URL's slash dropped and without its scheme in
+    original_site_query"""
+    metrics = fake_moz_metrics(url)
+    bare = url.split('://', 1)[1]
+    return {
+        'site_query': {'query': url.rstrip('/') if urlparse(url).path == '/' else url, 'scope': 'url',
+                       'original_site_query': {'query': bare, 'scope': 'url'},
+                       'site_query_suggestion': None},
+        'site_metrics': {
+            'page': bare, 'subdomain': '127.0.0.1', 'root_domain': '127.0.0.1', 'title': 't',
+            'last_crawled': '2026-10-01', 'http_code': 200, 'pages_to_page': 12,
+            'page_authority': metrics['moz_page_authority'],
+            'domain_authority': metrics['moz_domain_authority'],
+            'link_propensity': 0.01030706428,
+            'spam_score': metrics['moz_spam_score'],
+            'root_domains_to_page': metrics['moz_linking_domains'],
+            'external_pages_to_page': metrics['moz_inbound_links'],
+        }}
+
+
+@contextmanager
+def fake_moz_api(port, fail=None):
+    """Point the Moz client at a local stand-in for the API. Yields the requests
+    it receives; fail(n) may return a (status, error) to answer the nth (from 1)
+    with. Results come back in reverse order, as in the documented example."""
+    from src.integrations import moz
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.1'
+
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            seen.append({'token': self.headers.get('x-moz-token'), 'method': request['method'],
+                         'queries': request['params']['data']['site_queries']})
+            failure = fail and fail(len(seen))
+            if failure:
+                status, body = failure[0], {'id': request['id'], 'jsonrpc': '2.0', 'error': failure[1]}
+            else:
+                status, body = 200, {'id': request['id'], 'jsonrpc': '2.0', 'result': {
+                    'results_by_site': [fake_moz_result(q['query'])
+                                        for q in reversed(seen[-1]['queries'])],
+                    'errors_by_site': []}}
+            payload = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    srv = serve(Handler, port)
+    original = moz.API_URL
+    moz.API_URL = f'http://127.0.0.1:{port}/jsonrpc'
+    try:
+        yield seen
+    finally:
+        moz.API_URL = original
+        srv.shutdown()
+        srv.server_close()
+
+
+def moz_fields(row):
+    from src.integrations import moz
+    return {field: row.get(field) for field in moz.FIELDS}
+
+
+def moz_site_routes(paths):
+    """'/' linking to each of paths, each a plain page"""
+    routes = {'/': html(''.join(f'<a href="{p}">{p}</a>' for p in paths))}
+    routes.update({p: html(f'<p>{p}</p>') for p in paths})
+    return routes
+
+
+def test_moz_looks_up_indexable_pages_only():
+    """Moz is asked about indexable internal HTML pages and nothing else, and its
+    metrics land on the rows and in the saved crawl."""
+    site, api = BASE_PORT + 40, BASE_PORT + 41
+    base = f'http://127.0.0.1:{site}'
+    a = serve(make_handler({
+        '/': html('<a href="/a">a</a><a href="/b">b</a><a href="/noindex">n</a><a href="/canon">c</a>'
+                  '<a href="/missing">m</a><a href="/moved">r</a><a href="/download">d</a>'
+                  '<a href="/guide.pdf">pdf</a><img src="/logo.png" alt="logo">'),
+        '/a': html('<p>a</p>'),
+        '/b': html('<p>b</p>'),
+        '/noindex': page('Noindex', head='<meta name="robots" content="noindex">'),
+        '/canon': page('Canonicalised', head='<link rel="canonical" href="/a">'),
+        '/moved': (301, '/b'),
+        '/download': b'binary',
+        '/guide.pdf': b'%PDF-1.4',
+        '/logo.png': png(),
+    }), site)
+    try:
+        with temp_crawl_db() as crawl_db, fake_moz_api(api) as seen:
+            crawler = new_crawler(include_moz=True, moz_api_token=' test-token ')
+            finish(crawler, crawler.start_crawl(f'{base}/', session_id='test'))
+
+            asked = sorted(q['query'] for request in seen for q in request['queries'])
+            result('moz: only indexable HTML pages are looked up',
+                   asked == [f'{base}/', f'{base}/a', f'{base}/b'], str(asked))
+            result('moz: one request, URL scope, token sent',
+                   len(seen) == 1 and seen[0]['method'] == 'data.site.metrics.fetch.multiple'
+                   and seen[0]['token'] == 'test-token'
+                   and all(q['scope'] == 'url' for q in seen[0]['queries']), str(seen[:1]))
+
+            rows = {r['url']: r for r in crawler.crawl_results}
+            wrong = [url for url in asked if moz_fields(rows[url]) != fake_moz_metrics(url)]
+            result('moz: each page gets its own metrics', not wrong, str(wrong))
+            others = [url for url, row in rows.items()
+                      if url not in asked and any(v is not None for v in moz_fields(row).values())]
+            result('moz: other rows are left blank', not others, str(others))
+            result('moz: stats record the lookup',
+                   crawler.stats.get('moz') == {'pages': 3, 'found': 3, 'error': None},
+                   str(crawler.stats.get('moz')))
+
+            saved = {r['url']: r for r in crawl_db.load_crawled_urls(crawler.crawl_id)}
+            wrong = [url for url in asked if moz_fields(saved.get(url, {})) != fake_moz_metrics(url)]
+            result('moz: metrics survive the database', not wrong, str(wrong))
+            result('moz: crawl completes', crawl_db.get_crawl_by_id(crawler.crawl_id)['status'] == 'completed')
+    finally:
+        a.shutdown()
+
+
+def test_moz_batches_at_the_limit():
+    """Lookups go out in batches of the documented maximum, and results are
+    matched to their URLs whatever order they come back in."""
+    from src.integrations import moz
+
+    urls = ['http://example.test/'] + [f'http://example.test/p{n}' for n in range(100)]
+    with fake_moz_api(BASE_PORT + 42) as seen:
+        found = {}
+        for batch in moz.fetch_url_metrics('test-token', urls):
+            found.update(batch)
+    sizes = [len(request['queries']) for request in seen]
+    result('moz: 101 URLs go out as 50 + 50 + 1', sizes == [50, 50, 1], str(sizes))
+    wrong = [url for url in urls if found.get(url) != fake_moz_metrics(url)]
+    result('moz: every URL is matched to its own result', not wrong, str(wrong[:3]))
+
+
+def test_moz_off_or_without_token_sends_nothing():
+    """Nothing goes to Moz unless the box is ticked and a token is set."""
+    site, api = BASE_PORT + 43, BASE_PORT + 44
+    a = serve(make_handler(moz_site_routes(['/a'])), site)
+    try:
+        with fake_moz_api(api) as seen:
+            crawler = crawl(f'http://127.0.0.1:{site}/', include_moz=False, moz_api_token='test-token')
+            result('moz: off means no requests', not seen and 'moz' not in crawler.stats,
+                   f'{len(seen)} requests')
+
+            crawler = crawl(f'http://127.0.0.1:{site}/', include_moz=True, moz_api_token='  ')
+            result('moz: no token means no requests', not seen, f'{len(seen)} requests')
+            result('moz: a missing token is reported',
+                   crawler.stats.get('moz', {}).get('error') == 'No Moz API token set',
+                   str(crawler.stats.get('moz')))
+    finally:
+        a.shutdown()
+
+
+def test_moz_errors_leave_the_crawl_completed():
+    """A quota or auth error stops the lookups, keeps what came back and is
+    reported, and the crawl still completes."""
+    from src.integrations import moz
+
+    site, api = BASE_PORT + 45, BASE_PORT + 46
+    base = f'http://127.0.0.1:{site}'
+    a = serve(make_handler(moz_site_routes(['/a', '/b', '/c', '/d'])), site)
+    original_batch_size = moz.BATCH_SIZE
+    moz.BATCH_SIZE = 2
+    try:
+        with temp_crawl_db() as crawl_db, \
+                fake_moz_api(api, fail=lambda n: MOZ_QUOTA_ERROR if n == 2 else None) as seen:
+            crawler = new_crawler(include_moz=True, moz_api_token='test-token')
+            finish(crawler, crawler.start_crawl(f'{base}/', session_id='test'))
+
+            result('moz: quota error stops further requests', len(seen) == 2, f'{len(seen)} requests')
+            first = [q['query'] for q in seen[0]['queries']]
+            saved = {r['url']: r for r in crawl_db.load_crawled_urls(crawler.crawl_id)}
+            with_metrics = sorted(url for url, row in saved.items() if row.get('moz_page_authority') is not None)
+            result('moz: metrics from before the error are kept and saved',
+                   with_metrics == sorted(first)
+                   and all(moz_fields(saved[url]) == fake_moz_metrics(url) for url in first),
+                   str(with_metrics))
+            result('moz: quota error is recorded',
+                   crawler.stats['moz'] == {'pages': 5, 'found': 2, 'error': MOZ_QUOTA_ERROR[1]['message']},
+                   str(crawler.stats['moz']))
+            result('moz: crawl completes after a quota error',
+                   crawl_db.get_crawl_by_id(crawler.crawl_id)['status'] == 'completed')
+
+        with fake_moz_api(BASE_PORT + 47, fail=lambda n: MOZ_AUTH_ERROR) as seen:
+            crawler = crawl(f'{base}/', include_moz=True, moz_api_token='bad-token')
+            result('moz: auth error is not retried', len(seen) == 1, f'{len(seen)} requests')
+            result('moz: auth error is recorded',
+                   crawler.stats['moz']['error'] == 'Missing or invalid authentication',
+                   str(crawler.stats['moz']))
+            result('moz: linked_from still runs after a failed lookup',
+                   any(r.get('linked_from') for r in crawler.crawl_results))
+    finally:
+        moz.BATCH_SIZE = original_batch_size
+        a.shutdown()
+
+
+def moz_lookup_error(urls):
+    """The MozError a lookup of urls ends in, or None"""
+    from src.integrations import moz
+    try:
+        list(moz.fetch_url_metrics('test-token', urls))
+    except moz.MozError as e:
+        return str(e)
+    return None
+
+
+def test_moz_retries():
+    """Rate limits and server errors are retried a few times, never forever."""
+    from src.integrations import moz
+
+    urls = ['http://example.test/a']
+    with fake_moz_api(BASE_PORT + 48, fail=lambda n: MOZ_RATE_LIMITED if n == 1 else None) as seen:
+        found = list(moz.fetch_url_metrics('test-token', urls))
+    result('moz: a rate limit is waited out and retried',
+           len(seen) == 2 and found == [{urls[0]: fake_moz_metrics(urls[0])}], f'{len(seen)} requests')
+
+    with fake_moz_api(BASE_PORT + 49, fail=lambda n: MOZ_SERVER_ERROR) as seen:
+        message = moz_lookup_error(urls)
+    result('moz: server errors give up after the last attempt',
+           message == 'Internal error' and len(seen) == moz.MAX_ATTEMPTS,
+           f'{message!r} after {len(seen)} requests')
+
+    original = moz.API_URL
+    moz.API_URL = f'http://127.0.0.1:{BASE_PORT + 50}/jsonrpc'  # nothing listens here
+    try:
+        message = moz_lookup_error(urls)
+    finally:
+        moz.API_URL = original
+    result('moz: an unreachable API is reported', message == 'Moz API unreachable (ConnectionError)',
+           repr(message))
 
 
 def _playwright_available():
@@ -1169,6 +1433,11 @@ TESTS = (
     test_post_crawl_updates_reach_the_database,
     test_open_pagerank_lookup,
     test_open_pagerank_failures,
+    test_moz_looks_up_indexable_pages_only,
+    test_moz_batches_at_the_limit,
+    test_moz_off_or_without_token_sends_nothing,
+    test_moz_errors_leave_the_crawl_completed,
+    test_moz_retries,
 )
 
 

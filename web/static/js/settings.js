@@ -19,6 +19,8 @@ let defaultSettings = {
     enablePageSpeed: false,
     googleApiKey: '',
     openPageRankApiKey: '',
+    includeMoz: false,
+    mozApiToken: '',
 
     // Filter settings
     includeExtensions: 'html,htm,php,asp,aspx,jsp',
@@ -460,7 +462,7 @@ function collectSettingsFromForm() {
     // Collect regular form fields
     const formFields = [
         'maxDepth', 'maxUrls', 'crawlDelay', 'followRedirects', 'crawlExternalLinks',
-        'userAgent', 'timeout', 'retries', 'acceptLanguage', 'respectRobotsTxt', 'allowCookies', 'discoverSitemaps', 'enablePageSpeed', 'googleApiKey', 'openPageRankApiKey',
+        'userAgent', 'timeout', 'retries', 'acceptLanguage', 'respectRobotsTxt', 'allowCookies', 'discoverSitemaps', 'enablePageSpeed', 'googleApiKey', 'openPageRankApiKey', 'includeMoz', 'mozApiToken',
         'includeExtensions', 'excludeExtensions', 'includePatterns', 'excludePatterns', 'maxFileSize', 'crawlImages',
         'enableDuplicationCheck', 'duplicationThreshold',
         'exportFormat', 'concurrency', 'memoryLimit', 'logLevel', 'saveSession',
