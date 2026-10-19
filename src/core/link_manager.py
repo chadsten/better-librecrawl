@@ -14,6 +14,11 @@ def normalize_url(url):
     return clean_url
 
 
+def is_same_site(url, base_domain):
+    """Whether url is on the crawled site, with or without www."""
+    return urlparse(url).netloc.replace('www.', '', 1) == base_domain.replace('www.', '', 1)
+
+
 class LinkManager:
     """Manages link discovery, tracking, and extraction"""
 
@@ -282,10 +287,7 @@ class LinkManager:
 
     def is_internal(self, url):
         """Check if URL is internal to the base domain"""
-        parsed_url = urlparse(url)
-        url_domain_clean = parsed_url.netloc.replace('www.', '', 1)
-        base_domain_clean = self.base_domain.replace('www.', '', 1)
-        return url_domain_clean == base_domain_clean
+        return is_same_site(url, self.base_domain)
 
     def add_url(self, url, depth):
         """Add a URL to the discovery queue"""

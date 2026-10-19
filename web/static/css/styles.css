@@ -1159,6 +1159,21 @@ body {
     margin: 0;
 }
 
+/* AI Search tab: its tables are short, so they grow to fit their rows */
+.table-container.auto-height {
+    height: auto;
+}
+
+.ai-search-legend {
+    margin-top: 8px;
+}
+
+/* Cells wrap instead of being cut off, and the last column (Note, Why)
+   takes the width left over, so every explanation shows in full */
+.ai-search-table td {
+    white-space: normal;
+}
+
 .pagespeed-placeholder {
     text-align: center;
     padding: 40px 20px;

@@ -27,7 +27,7 @@ MAX_REDIRECTS = 10
 
 # Stats worked out when a crawl ends and not saved with it, so they're
 # cleared when a saved crawl is loaded or resumed
-POST_CRAWL_STATS = ('open_pagerank', 'moz', 'ai_access')
+POST_CRAWL_STATS = ('open_pagerank', 'moz', 'ai_search')
 
 
 def classify_fetch_error(exc_or_msg):
@@ -111,6 +111,7 @@ from src.core.link_manager import LinkManager
 from src.core.js_renderer import JavaScriptRenderer
 from src.core.sitemap_parser import SitemapParser
 from src.core.ai_access import ai_robots_access
+from src.core.ai_search import ai_search_report
 from src.core.issue_detector import IssueDetector, is_internal_html_page
 from src.core.link_score import link_scores
 from src.core.memory_monitor import MemoryMonitor
@@ -1480,14 +1481,30 @@ class WebCrawler:
 
         self._update_all_linked_from()
         self._update_link_scores()
-        self._run_ai_access_checks()
+        self._run_ai_search_checks()
         self._run_whole_crawl_checks()
 
-    def _run_ai_access_checks(self):
-        """Which AI crawlers robots.txt lets reach the crawled pages, for the AI Access tab and issues"""
+    def _run_ai_search_checks(self):
+        """The AI Search tab: which AI crawlers robots.txt lets reach the
+        crawled pages (raising their issues), then a tally of every AI Search check"""
         pages = [result for result in self.crawl_results if is_internal_html_page(result)]
-        self.stats['ai_access'], blocked = ai_robots_access(pages, self._robots_for, self.base_url)
+        access, blocked = ai_robots_access(pages, self._robots_for, self.base_url)
         self._add_whole_crawl_issues(self.issue_detector.detect_ai_bot_issues, blocked)
+        looked_for_sitemaps = self.config.get('discover_sitemaps', True) and not self.config.get('list_mode')
+        site = {'sitemap_lastmods': self.sitemap_parser.lastmods if looked_for_sitemaps else None,
+                'llms_txt': self._fetch_llms_txt()}
+        self.stats['ai_search'] = ai_search_report(access, pages, self.issue_detector.get_issues(), site)
+
+    def _fetch_llms_txt(self):
+        """The crawled site's /llms.txt: {url, status, text}, status None when the fetch failed"""
+        parsed = urlparse(self.base_url)
+        url = f"{parsed.scheme}://{parsed.netloc}/llms.txt"
+        try:
+            response = self.session.get(url, timeout=10)
+        except requests.exceptions.RequestException as e:
+            print(f"llms.txt fetch failed for {url}: {e}")
+            return {'url': url, 'status': None, 'text': ''}
+        return {'url': url, 'status': response.status_code, 'text': response.text if response.ok else ''}
 
     def _update_link_scores(self):
         """Give internal pages their Link Score once every link is known"""
@@ -1778,7 +1795,7 @@ class WebCrawler:
         Protego matches rules the way Google does (wildcards, longest match).
         Only a 2xx body holds rules; Google reads any other 4xx as "no rules".
         A 429, 5xx or failed fetch (status None) also leaves crawling open
-        here, where Google would stop, so the AI Access report flags it.
+        here, where Google would stop, so the AI Search report flags it.
         Fetched with our session so servers see our User-Agent.
         """
         parsed = urlparse(url)

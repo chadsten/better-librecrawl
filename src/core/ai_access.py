@@ -7,11 +7,13 @@ gathers model training data: blocking it is a business choice and leaves the
 site in AI answers. Sources: each vendor's crawler docs, as of Oct 2026.
 """
 
-# Grouped by kind; issue is the per-page issue raised for a blocked bot of that kind
+from src.core.ai_search import AI_SEARCH_CHECKS
+
+# Grouped by kind; check is the AI_SEARCH_CHECKS entry raised for a page blocked to a bot of that kind
 BOT_KINDS = {
-    'search': {'label': 'Search', 'issue': 'Blocked for AI Search Bots', 'type': 'warning'},
-    'live': {'label': 'Live fetch', 'issue': 'Blocked for AI Live Fetchers', 'type': 'info'},
-    'training': {'label': 'Training', 'issue': None, 'type': None},
+    'search': {'label': 'Search', 'check': 'blocked_search'},
+    'live': {'label': 'Live fetch', 'check': 'blocked_live'},
+    'training': {'label': 'Training', 'check': None},
 }
 
 # robots.txt token -> who uses it, its kind, and anything to know about it
@@ -50,7 +52,7 @@ def ai_robots_access(pages, robots_for, site_url):
     """Which AI bots robots.txt keeps off each of `pages` (internal HTML pages).
 
     robots_for(url) gives the robots.txt record for url's host. Returns
-    (summary for the AI Access tab, {bot token: set of blocked page URLs}).
+    (summary for the AI Search tab, {bot token: set of blocked page URLs}).
     """
     blocked = {token: set() for token in AI_BOTS}
     for page in pages:
@@ -71,7 +73,12 @@ def ai_robots_access(pages, robots_for, site_url):
         'pages': len(pages),
         'bots': [{'token': token, 'used_by': bot['used_by'], 'kind': BOT_KINDS[bot['kind']]['label'],
                   'note': bot.get('note', ''), 'blocked_pages': len(blocked[token]),
-                  'flagged': bool(blocked[token]) and BOT_KINDS[bot['kind']]['type'] == 'warning'}
+                  'flagged': bool(blocked[token]) and _flags(BOT_KINDS[bot['kind']]['check'])}
                  for token, bot in AI_BOTS.items()],
     }
     return summary, blocked
+
+
+def _flags(check):
+    """Whether pages blocked to a bot of this kind get a warning, not just a note"""
+    return check is not None and AI_SEARCH_CHECKS[check]['type'] == 'warning'

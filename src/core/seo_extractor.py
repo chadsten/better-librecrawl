@@ -4,16 +4,9 @@ import json
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
-from bs4.element import PreformattedString
 
-_WORDS = re.compile(r'\b\w+\b')
-_NOT_TEXT = ('script', 'style', 'template')
-
-
-def visible_word_count(soup):
-    """Words in a page's text, leaving out scripts, styles and comments"""
-    return sum(len(_WORDS.findall(text)) for text in soup.find_all(string=True)
-               if not isinstance(text, PreformattedString) and text.parent.name not in _NOT_TEXT)
+from src.core.ai_search import WORDS, js_head_changes, json_ld_scripts, page_facts, visible_word_count
+from src.core.link_manager import is_same_site
 
 
 class SEOExtractor:
@@ -33,27 +26,32 @@ class SEOExtractor:
         SEOExtractor.extract_hreflang(soup, result)
         SEOExtractor.extract_schema_org(soup, result)
         SEOExtractor.extract_nosnippet_words(soup, result)
+        result['ai_search'] = page_facts(soup, result, base_domain)
 
     @staticmethod
     def extract_raw_html_stats(raw_html, rendered_soup, result, base_domain):
         """For a JavaScript-rendered page, what a crawler that doesn't run
-        JavaScript finds in the raw HTML (words, H1, internal links), with the
-        rendered page's words counted the same way"""
+        JavaScript finds in the raw HTML (words, H1, internal links, head tags
+        and size), with the rendered page's words counted the same way"""
         soup = BeautifulSoup(raw_html, 'html.parser')
-        raw = {'url': result['url'], 'internal_links': 0, 'external_links': 0}
+        raw = {'url': result['url'], 'internal_links': 0, 'external_links': 0, 'meta_tags': {}, 'json_ld': []}
         SEOExtractor.extract_basic_seo_data(soup, raw)
+        SEOExtractor.extract_meta_tags(soup, raw)
+        SEOExtractor.extract_json_ld(soup, raw)
         SEOExtractor.extract_link_counts(soup, raw, base_domain)
         result['raw_word_count'] = visible_word_count(soup)
         result['rendered_word_count'] = visible_word_count(rendered_soup)
         result['raw_h1'] = raw['h1']
         result['raw_internal_links'] = raw['internal_links']
+        result['ai_search'].update(raw_bytes=len(raw_html.encode('utf-8')),
+                                   js_changes=js_head_changes(raw, result))
 
     @staticmethod
     def extract_nosnippet_words(soup, result):
         """Words inside data-nosnippet elements, which Google won't quote in snippets or AI answers"""
         regions = soup.find_all(attrs={'data-nosnippet': True})
         result['nosnippet_words'] = sum(
-            len(_WORDS.findall(region.get_text(' '))) for region in regions
+            len(WORDS.findall(region.get_text(' '))) for region in regions
             if not region.find_parent(attrs={'data-nosnippet': True}))
 
     @staticmethod
@@ -79,7 +77,7 @@ class SEOExtractor:
 
         # Count words
         text_content = soup.get_text()
-        result['word_count'] = len(_WORDS.findall(text_content))
+        result['word_count'] = len(WORDS.findall(text_content))
 
         # Extract language
         html_tag = soup.find('html')
@@ -153,9 +151,7 @@ class SEOExtractor:
     @staticmethod
     def extract_json_ld(soup, result):
         """Extract JSON-LD structured data"""
-        json_ld_scripts = soup.find_all('script', attrs={'type': 'application/ld+json'})
-
-        for script in json_ld_scripts:
+        for script in json_ld_scripts(soup):
             try:
                 json_data = json.loads(script.string)
                 result['json_ld'].append(json_data)
@@ -241,14 +237,7 @@ class SEOExtractor:
         for link in links:
             href = link.get('href', '')
             if href and not href.startswith(('#', 'mailto:', 'tel:', 'javascript:')):
-                absolute_url = urljoin(result['url'], href)
-                parsed_url = urlparse(absolute_url)
-
-                # Handle www vs non-www domains
-                url_domain_clean = parsed_url.netloc.replace('www.', '', 1)
-                base_domain_clean = base_domain.replace('www.', '', 1)
-
-                if url_domain_clean == base_domain_clean:
+                if is_same_site(urljoin(result['url'], href), base_domain):
                     result['internal_links'] += 1
                 else:
                     result['external_links'] += 1

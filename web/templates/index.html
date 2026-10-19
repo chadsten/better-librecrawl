@@ -218,7 +218,7 @@
                         <button class="tab-btn" onclick="switchTab('links')">Links</button>
                         <button class="tab-btn" onclick="switchTab('issues')">Issues</button>
                         <button class="tab-btn" onclick="switchTab('pagespeed')">PageSpeed</button>
-                        <button class="tab-btn" onclick="switchTab('ai-access')">AI Access</button>
+                        <button class="tab-btn" onclick="switchTab('ai-search')">AI Search</button>
                         <button class="tab-btn" onclick="switchTab('visualization')">Visualization</button>
                     </div>
 
@@ -444,30 +444,50 @@
                             </div>
                         </div>
 
-                        <div id="ai-access-tab" class="tab-pane">
+                        <div id="ai-search-tab" class="tab-pane">
                             <div class="pagespeed-container">
                                 <div class="pagespeed-header">
-                                    <h3>AI Access</h3>
-                                    <p class="pagespeed-description">Which AI crawlers the site's robots.txt lets in. Search bots feed AI answers; training bots only gather training data. Page-level problems are in the Issues tab under AI Search.</p>
+                                    <h3>AI Search</h3>
+                                    <p class="pagespeed-description">Which AI crawlers the site's robots.txt lets in. Search bots feed AI answers; training bots only gather training data.</p>
                                 </div>
-                                <div class="pagespeed-placeholder" id="aiAccessPlaceholder">
-                                    <p>🤖 AI crawler access will appear here after crawl completion</p>
+                                <div class="pagespeed-placeholder" id="aiSearchPlaceholder">
+                                    <p>🤖 AI Search checks will appear here after crawl completion</p>
                                 </div>
-                                <div id="aiAccessResults" style="display: none;">
-                                    <p class="pagespeed-description" id="aiAccessSummary"></p>
-                                    <div class="table-container">
-                                        <table class="data-table" id="aiAccessTable">
+                                <div id="aiSearchResults" style="display: none;">
+                                    <p class="pagespeed-description" id="aiSearchSummary"></p>
+                                    <div class="table-container auto-height">
+                                        <table class="data-table ai-search-table" id="aiSearchBotsTable">
                                             <thead>
                                                 <tr>
                                                     <th class="col-md">Bot</th>
                                                     <th class="col-lg">Used by</th>
                                                     <th class="col-sm">Type</th>
-                                                    <th class="col-sm">robots.txt</th>
+                                                    <th class="col-md">robots.txt</th>
                                                     <th class="col-md">Pages blocked</th>
-                                                    <th class="col-lg">Note</th>
+                                                    <th>Note</th>
                                                 </tr>
                                             </thead>
-                                            <tbody id="aiAccessTableBody"></tbody>
+                                            <tbody id="aiSearchBotsBody"></tbody>
+                                        </table>
+                                    </div>
+
+                                    <div class="pagespeed-header">
+                                        <h3>Page checks</h3>
+                                        <p class="pagespeed-description">Each check, the share of crawled pages it applies to, and how strong the evidence behind it is. In the largest study so far, where a page ranks in the AI engine's own searches explained about 32% of which pages got cited, and everything on the page together about 3% (Chen &amp; Koudas, 2026 preprint). So treat these as hygiene, not a score. Affected pages are listed in the Issues tab under AI Search. With JavaScript rendering on, the page checks read the rendered page.</p>
+                                        <div class="pagespeed-description ai-search-legend" id="aiSearchLegend"></div>
+                                    </div>
+                                    <div class="table-container auto-height">
+                                        <table class="data-table ai-search-table" id="aiSearchChecksTable">
+                                            <thead>
+                                                <tr>
+                                                    <th class="col-lg">Check</th>
+                                                    <th class="col-sm">Group</th>
+                                                    <th class="col-sm">Pages</th>
+                                                    <th class="col-md">Evidence</th>
+                                                    <th>Why</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="aiSearchChecksBody"></tbody>
                                         </table>
                                     </div>
                                 </div>

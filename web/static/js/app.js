@@ -587,7 +587,7 @@ function updateCrawlData(data) {
     if (data.stats && data.stats.pagespeed_results) {
         displayPageSpeedResults(data.stats.pagespeed_results);
     }
-    displayAiAccess(data.stats?.ai_access);
+    displayAiSearch(data.stats?.ai_search);
 
     // Notify plugins of data update
     if ((changed.urls || changed.links || changed.issues) &&
@@ -1123,7 +1123,7 @@ function clearAllTables() {
     // Clear status codes table (not virtualized)
     const statusCodesBody = document.getElementById('statusCodesTableBody');
     if (statusCodesBody) statusCodesBody.innerHTML = '';
-    displayAiAccess(null);
+    displayAiSearch(null);
 
     crawlState.urls = [];
 
@@ -1947,6 +1947,16 @@ function showUrlDetails(url) {
                             </div>
                         </div>` : ''}
 
+                        ${urlData.ai_search ? `
+                        <div class="details-section">
+                            <h4>🤖 AI Search</h4>
+                            <div class="details-grid">
+                                ${aiSearchDetails(urlData.ai_search).map(([label, value]) =>
+                                    `<div><strong>${label}:</strong> ${escapeHtml(String(value))}</div>`
+                                ).join('')}
+                            </div>
+                        </div>` : ''}
+
                         <div class="details-section">
                             <h4>📊 Analytics & Tracking</h4>
                             <div class="details-grid">
@@ -2072,8 +2082,8 @@ function closeUrlDetails() {
     }
 }
 
-// AI Access tab: which AI crawlers robots.txt lets in, from stats.ai_access
-// (src/core/ai_access.py builds it when the crawl ends)
+// AI Search tab: which AI crawlers robots.txt lets in, then a row per check,
+// from stats.ai_search (src/core/ai_search.py builds it when the crawl ends)
 function aiBotStatus(bot, report) {
     if (report.robots_unavailable) return 'Unknown';
     if (!bot.blocked_pages) return 'Allowed';
@@ -2100,24 +2110,67 @@ function aiAccessSummary(report) {
     return parts.join(' ');
 }
 
-function displayAiAccess(report) {
-    document.getElementById('aiAccessPlaceholder').style.display = report ? 'none' : '';
-    document.getElementById('aiAccessResults').style.display = report ? '' : 'none';
-    const body = document.getElementById('aiAccessTableBody');
-    body.innerHTML = '';
+// A share of the crawled pages, as "12% (5)"
+function pageShare(count, report) {
+    return `${report.pages ? Math.round(100 * count / report.pages) : 0}% (${count})`;
+}
+
+// Filled dots for how strong the evidence is: ●●●○
+function evidenceMeter(strength, max) {
+    return '●'.repeat(strength) + '○'.repeat(max - strength);
+}
+
+// A text-only row; each cell's full text shows on hover, since long cells are cut off
+function addAiSearchRow(body, cells, flagged) {
+    const row = body.insertRow();
+    for (const text of cells) {
+        const cell = row.insertCell();
+        cell.textContent = cell.title = text;
+    }
+    if (flagged) row.style.setProperty('--row-tint', ISSUE_TYPES.warning.tint);
+}
+
+function displayAiSearch(report) {
+    document.getElementById('aiSearchPlaceholder').style.display = report ? 'none' : '';
+    document.getElementById('aiSearchResults').style.display = report ? '' : 'none';
+    const bots = document.getElementById('aiSearchBotsBody');
+    const checks = document.getElementById('aiSearchChecksBody');
+    const legend = document.getElementById('aiSearchLegend');
+    bots.innerHTML = checks.innerHTML = legend.innerHTML = '';
     if (!report) return;
 
-    document.getElementById('aiAccessSummary').textContent = aiAccessSummary(report);
+    document.getElementById('aiSearchSummary').textContent = aiAccessSummary(report);
     for (const bot of report.bots) {
-        const row = body.insertRow();
-        const percent = report.pages ? Math.round(100 * bot.blocked_pages / report.pages) : 0;
-        const cells = [bot.token, bot.used_by, bot.kind, aiBotStatus(bot, report),
-                       `${percent}% (${bot.blocked_pages})`, bot.note];
-        for (const text of cells) {
-            row.insertCell().textContent = text;
-        }
-        if (bot.flagged) row.style.setProperty('--row-tint', ISSUE_TYPES.warning.tint);
+        addAiSearchRow(bots, [bot.token, bot.used_by, bot.kind, aiBotStatus(bot, report),
+                              pageShare(bot.blocked_pages, report), bot.note], bot.flagged);
     }
+
+    const max = Math.max(...report.evidence_levels.map(level => level.strength));
+    for (const level of report.evidence_levels) {
+        legend.appendChild(document.createElement('div')).textContent =
+            `${evidenceMeter(level.strength, max)} ${level.label}: ${level.note}`;
+    }
+    for (const check of report.checks) {
+        addAiSearchRow(checks, [check.check, check.group, check.value ?? pageShare(check.pages, report),
+                                `${evidenceMeter(check.strength, max)} ${check.evidence}`, check.basis],
+                       check.flag);
+    }
+}
+
+// Per-page AI Search facts for the URL details (page_facts in src/core/ai_search.py)
+function aiSearchDetails(facts) {
+    const yesNo = value => value == null ? 'N/A' : (value ? 'Yes' : 'No');
+    return [
+        ['FAQ section', yesNo(facts.faq)],
+        ['Headings phrased as questions', facts.question_headings],
+        ['Lists and tables', facts.lists_tables],
+        ['Words before the first subheading', facts.intro_words ?? 'N/A'],
+        ['Text length', `${facts.text_chars.toLocaleString()} characters`],
+        ['Hidden until clicked', `${facts.hidden_words} words`],
+        ['Published', facts.date_published ?? 'N/A'],
+        ['Modified', facts.date_modified ?? 'N/A'],
+        ['Date shown on the page', yesNo(facts.date_shown)],
+    ];
 }
 
 function displayPageSpeedResults(results) {
@@ -2438,7 +2491,7 @@ function loadCrawl() {
                 console.log(`Loading ${saveData.stats.pagespeed_results.length} PageSpeed results...`);
                 displayPageSpeedResults(saveData.stats.pagespeed_results);
             }
-            displayAiAccess(saveData.stats?.ai_access);
+            displayAiSearch(saveData.stats?.ai_search);
 
             // Force refresh of all tables
             setTimeout(() => {

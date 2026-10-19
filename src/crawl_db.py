@@ -14,14 +14,21 @@ from src.integrations import moz
 import os
 DB_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'users.db')
 
-# Page fields the AI Access checks read, saved with each crawled row: column -> SQL type
-AI_ACCESS_COLUMNS = {
+# Page fields the AI Search checks read, saved with each crawled row: column -> SQL type.
+# ai_search holds the page facts from src/core/ai_search.py as JSON.
+AI_SEARCH_COLUMNS = {
     'nosnippet_words': 'INTEGER',
     'raw_word_count': 'INTEGER',
     'rendered_word_count': 'INTEGER',
     'raw_h1': 'TEXT',
     'raw_internal_links': 'INTEGER',
+    'ai_search': 'TEXT',
 }
+
+
+def _column_value(value):
+    """A field as SQLite stores it: lists and dicts as JSON"""
+    return json.dumps(value) if isinstance(value, (list, dict)) else value
 
 @contextmanager
 def get_db():
@@ -167,8 +174,8 @@ def init_crawl_tables():
             except sqlite3.OperationalError:
                 pass  # Column already exists
 
-        # Migration: page fields the AI Access checks read
-        for column, column_type in AI_ACCESS_COLUMNS.items():
+        # Migration: page fields the AI Search checks read
+        for column, column_type in AI_SEARCH_COLUMNS.items():
             try:
                 cursor.execute(f'ALTER TABLE crawled_urls ADD COLUMN {column} {column_type}')
             except sqlite3.OperationalError:
@@ -361,7 +368,7 @@ def save_url_batch(crawl_id, urls):
                     url_data.get('link_check_only', False),
                     url_data.get('x_robots_tag'),
                     url_data.get('redirected_to'),
-                    *(url_data.get(column) for column in AI_ACCESS_COLUMNS)
+                    *(_column_value(url_data.get(column)) for column in AI_SEARCH_COLUMNS)
                 )
                 rows.append(row)
 
@@ -374,7 +381,7 @@ def save_url_batch(crawl_id, urls):
                     hreflang, schema_org, redirects, linked_from,
                     external_links, internal_links, response_time, javascript_rendered,
                     error_type, render_time, link_check_only, x_robots_tag, redirected_to,
-                    {', '.join(AI_ACCESS_COLUMNS)}
+                    {', '.join(AI_SEARCH_COLUMNS)}
                 ) VALUES ({', '.join('?' * len(rows[0]))})
             ''', rows)
 
@@ -397,8 +404,7 @@ def update_url_fields(crawl_id, urls, fields):
             assignments = ', '.join(f'{field} = ?' for field in fields)
             rows = []
             for url_data in urls:
-                values = [url_data.get(field) for field in fields]
-                values = [json.dumps(v) if isinstance(v, (list, dict)) else v for v in values]
+                values = [_column_value(url_data.get(field)) for field in fields]
                 rows.append((*values, crawl_id, url_data['url']))
 
             conn.executemany(
@@ -602,7 +608,7 @@ def load_crawled_urls(crawl_id, limit=None, offset=0):
                 # Parse JSON fields
                 for field in ['h2', 'h3', 'meta_tags', 'og_tags', 'twitter_tags',
                              'json_ld', 'analytics', 'images', 'hreflang',
-                             'schema_org', 'redirects', 'linked_from']:
+                             'schema_org', 'redirects', 'linked_from', 'ai_search']:
                     if url_data.get(field):
                         try:
                             url_data[field] = json.loads(url_data[field])

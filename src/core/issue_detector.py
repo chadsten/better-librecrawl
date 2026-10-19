@@ -3,11 +3,13 @@ import math
 import re
 import threading
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
+from datetime import date, timedelta
 from fnmatch import fnmatch
 from urllib.parse import urljoin, urlparse
 
 from src.core.ai_access import AI_BOTS, BOT_KINDS
+from src.core.ai_search import EXAMPLES, GOOGLEBOT_HTML_BYTES, HIDDEN_MIN_WORDS, JS_HEAD_TAGS, ai_issue
 from src.core.link_manager import normalize_url
 
 # Near-duplicate detection is bounded so a large site can never hold a crawl in
@@ -153,6 +155,7 @@ class IssueDetector:
             self._check_indexability_issues(result, issues)
             self._check_ai_snippet_issues(result, issues)
             self._check_js_only_content_issues(result, issues)
+            self._check_ai_page_issues(result, issues)
             self._check_broken_image_issues(result, issues)
 
         # Add all detected issues
@@ -500,37 +503,35 @@ class IssueDetector:
         if 'noindex' in google:
             return  # already reported, and it keeps the page out of everything
 
-        def add(issue_type, issue, details):
-            issues.append({'url': url, 'type': issue_type, 'category': 'AI Search',
-                           'issue': issue, 'details': details})
+        def add(check, details):
+            issues.append(ai_issue(url, check, details))
 
         max_snippet = google.get('max-snippet', '')
         if 'nosnippet' in google or max_snippet == '0':
-            add('warning', 'Excluded from Google AI Answers',
-                'nosnippet (or max-snippet:0) keeps the page\'s text out of AI Overviews and AI Mode')
+            add('no_google_ai', 'nosnippet (or max-snippet:0) keeps the page\'s text out of AI Overviews and AI Mode')
         elif max_snippet.isdigit() and int(max_snippet) < SHORT_MAX_SNIPPET:
-            add('info', 'AI Snippet Limited',
+            add('snippet_limited',
                 f'max-snippet:{max_snippet} limits how much of the page Google\'s AI features can quote')
 
         bing = page_robots_directives(result, 'bingbot')
         if 'noarchive' in bing:
-            add('warning', 'Excluded from Copilot Answers',
-                'noarchive stops Microsoft Copilot from using the page\'s content in answers')
+            add('no_copilot', 'noarchive stops Microsoft Copilot from using the page\'s content in answers')
         elif 'nocache' in bing:
-            add('info', 'Copilot Limited to Title and Snippet',
-                'nocache limits Microsoft Copilot to the page\'s URL, title and snippet')
+            add('copilot_limited', 'nocache limits Microsoft Copilot to the page\'s URL, title and snippet')
 
         hidden_words = result.get('nosnippet_words') or 0
         if hidden_words:
-            add('info', 'Text Hidden from AI Snippets',
+            add('nosnippet_text',
                 f'{hidden_words} words are inside data-nosnippet elements, which Google\'s AI features won\'t quote')
 
     def _check_js_only_content_issues(self, result, issues):
-        """Content that only appears once JavaScript runs. Set for pages crawled
-        with JavaScript rendering, which also record the raw HTML's numbers."""
+        """Content and head tags that only appear, or change, once JavaScript
+        runs. Set for pages crawled with JavaScript rendering, which also
+        record what the raw HTML holds."""
         raw_words = result.get('raw_word_count')
         if raw_words is None:
             return
+        url = result.get('url', '')
 
         missing = []
         words = result.get('rendered_word_count') or 0
@@ -543,14 +544,90 @@ class IssueDetector:
             missing.append(f'{links - raw_links} of {links} internal links')
 
         if missing:
-            issues.append({
-                'url': result.get('url', ''),
-                'type': 'warning',
-                'category': 'AI Search',
-                'issue': 'Content Needs JavaScript',
-                'details': f"Only there after JavaScript runs: {', '.join(missing)}. "
-                           "The ChatGPT, Claude and Perplexity crawlers don't run JavaScript, so they miss it."
-            })
+            issues.append(ai_issue(url, 'needs_js',
+                                   f"Only there after JavaScript runs: {', '.join(missing)}. "
+                                   "The ChatGPT, Claude and Perplexity crawlers don't run JavaScript, so they miss it."))
+
+        changes = (result.get('ai_search') or {}).get('js_changes')
+        if changes:
+            issues.append(ai_issue(url, 'js_head', '; '.join(
+                self._js_head_change(key, raw, result) for key, raw in changes.items())))
+
+    @staticmethod
+    def _js_head_change(key, raw, result):
+        """One head tag that JavaScript changed, as issue details put it"""
+        if key == 'json_ld':
+            return 'structured data only after JavaScript' if not raw else 'structured data removed by JavaScript'
+        name = JS_HEAD_TAGS[key]
+        if not raw:
+            return f'{name} only after JavaScript'
+        verb = 'changed' if result.get(key) else 'removed'
+        return f'{name} {verb} by JavaScript (raw HTML: "{raw[:80]}")'
+
+    def _check_ai_page_issues(self, result, issues):
+        """What an AI tool reading the page would trip over, from the facts
+        ai_search.page_facts collected. A noindexed page is out of AI search anyway."""
+        facts = result.get('ai_search')
+        if not facts or 'noindex' in page_robots_directives(result):
+            return
+        url = result['url']
+
+        def add(check, details):
+            issues.append(ai_issue(url, check, details))
+
+        def plural(count, noun):
+            return f"{count} {noun}{'s' if count != 1 else ''}"
+
+        if facts['json_ld_errors']:
+            add('invalid_schema', plural(facts['json_ld_errors'], 'JSON-LD block')
+                + ' with a parse error, or no schema.org @context or @type')
+        if facts['schema_only']:
+            add('schema_only', 'In the structured data but not the page text: ' + '; '.join(facts['schema_only']))
+        html_bytes = facts.get('raw_bytes') or result.get('size') or 0
+        if html_bytes > GOOGLEBOT_HTML_BYTES:
+            add('html_over_2mb', f'The HTML is {html_bytes / 1024 / 1024:.1f} MB. Googlebot reads only the '
+                                 "first 2 MB, so the rest isn't indexed")
+
+        if facts['heading_skips']:
+            add('heading_skips', 'Heading levels skipped: ' + ', '.join(
+                skip + (f' ({count}×)' if count > 1 else '')
+                for skip, count in Counter(facts['heading_skips']).items()))
+        weak = []
+        if facts['empty_headings']:
+            weak.append(plural(facts['empty_headings'], 'empty heading'))
+        if facts['generic_headings']:
+            weak.append('generic: ' + ', '.join(f'"{heading}"' for heading in facts['generic_headings'][:EXAMPLES]))
+        if weak:
+            add('weak_headings', '; '.join(weak))
+        if facts['hidden_words'] >= HIDDEN_MIN_WORDS:
+            add('hidden_content', f"{facts['hidden_words']} of {facts['main_words']} words stay hidden until a "
+                                  'reader clicks or opens them (tabs, accordions, <details>)')
+        if facts['ai_instructions']:
+            add('ai_instructions', 'Hidden text or comments addressed to AI: '
+                + ' | '.join(f'"…{quote}…"' for quote in facts['ai_instructions']))
+
+        if facts['links_no_text']:
+            add('links_no_text', plural(facts['links_no_text'], 'link') + ' with no text, image alt or aria-label')
+        if facts['generic_links']:
+            add('generic_links', 'Links that only say ' + ', '.join(
+                f'"{text}"' + (f' ({count}×)' if count > 1 else '')
+                for text, count in sorted(facts['generic_links'].items(), key=lambda item: -item[1])))
+        if facts['unfollowable_count']:
+            add('unfollowable_links', plural(facts['unfollowable_count'], 'link')
+                + ' without a crawlable <a href>, e.g. ' + ', '.join(facts['unfollowable_links']))
+
+        published, modified = (date.fromisoformat(day) if day else None
+                               for day in (facts['date_published'], facts['date_modified']))
+        problems = [f'{name} {day} is in the future'
+                    for name, day in (('datePublished', published), ('dateModified', modified))
+                    if day and day > date.today() + timedelta(days=1)]
+        if published and modified and modified < published:
+            problems.append(f'dateModified {modified} is before datePublished {published}')
+        if problems:
+            add('bad_dates', '; '.join(problems))
+        if facts['date_shown'] is False:
+            dates = ', '.join(f'{name} {day}' for name, day in (('published', published), ('modified', modified)) if day)
+            add('date_not_shown', f"The article's dates in its markup ({dates}) don't appear in the page text")
 
     def _check_broken_image_issues(self, result, issues):
         """Check for broken image URLs on the page"""
@@ -633,16 +710,10 @@ class IssueDetector:
                 if url in urls:
                     by_kind[AI_BOTS[token]['kind']].append(token)
             for kind, tokens in by_kind.items():
-                spec = BOT_KINDS[kind]
-                if spec['issue']:
-                    issues.append({
-                        'url': url,
-                        'type': spec['type'],
-                        'category': 'AI Search',
-                        'issue': spec['issue'],
-                        'details': 'robots.txt blocks ' + ', '.join(
-                            f"{token} ({AI_BOTS[token]['used_by']})" for token in tokens)
-                    })
+                check = BOT_KINDS[kind]['check']
+                if check:
+                    issues.append(ai_issue(url, check, 'robots.txt blocks ' + ', '.join(
+                        f"{token} ({AI_BOTS[token]['used_by']})" for token in tokens)))
 
         with self.issues_lock:
             self.detected_issues.extend(issues)
