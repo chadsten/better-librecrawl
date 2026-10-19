@@ -499,7 +499,8 @@ function pollCrawlProgress() {
                 setTimeout(pollCrawlProgress, 1000); // Poll every second
             } else if (data.status === 'completed') {
                 stopCrawl();
-                updateStatus('Crawl completed');
+                const mozError = data.stats?.moz?.error;
+                updateStatus(mozError ? `Crawl completed. Moz lookup failed: ${mozError}` : 'Crawl completed');
                 // Update visualization one final time when crawl completes
                 if (typeof loadVisualizationData === 'function') {
                     loadVisualizationData();
@@ -1918,6 +1919,16 @@ function showUrlDetails(url) {
                             </div>
                         </div>
 
+                        ${MOZ_METRICS.some(({ field }) => urlData[field] != null) ? `
+                        <div class="details-section">
+                            <h4>📈 Moz</h4>
+                            <div class="details-grid">
+                                ${MOZ_METRICS.map(({ field, label }) =>
+                                    `<div><strong>${label}:</strong> ${escapeHtml(String(urlData[field] ?? 'N/A'))}</div>`
+                                ).join('')}
+                            </div>
+                        </div>` : ''}
+
                         <div class="details-section">
                             <h4>📊 Analytics & Tracking</h4>
                             <div class="details-grid">
@@ -2409,6 +2420,17 @@ function loadCrawl() {
 
 const countText = noun => count => (count > 0 ? `${count} ${noun}` : '');
 
+// Moz URL metrics, set after the crawl when Include Moz is on. Fields are
+// defined in src/integrations/moz.py; the Overview headers and export
+// checkboxes in index.html follow this order.
+const MOZ_METRICS = [
+    { field: 'moz_page_authority', label: 'Page Authority' },
+    { field: 'moz_domain_authority', label: 'Domain Authority' },
+    { field: 'moz_spam_score', label: 'Spam Score' },
+    { field: 'moz_linking_domains', label: 'Linking Domains' },
+    { field: 'moz_inbound_links', label: 'Inbound Links' }
+];
+
 function detailsButtonCell(urlData) {
     const cell = document.createElement('td');
     const button = document.createElement('button');
@@ -2434,6 +2456,7 @@ const OVERVIEW_COLUMNS = [
     { value: d => d.internal_links || 0, text: (count, d) => `${count}/${d.external_links || 0}` },
     { value: d => (d.images || []).length, text: countText('images') },
     { value: d => (d.javascript_rendered ? 1 : 0), text: rendered => (rendered ? '✅ JS' : '') },
+    ...MOZ_METRICS.map(({ field }) => ({ value: d => d[field] })),
     { cell: detailsButtonCell }
 ];
 

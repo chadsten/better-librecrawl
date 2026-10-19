@@ -39,7 +39,7 @@ class SettingsManager:
         extra_settings = user_settings + [
             # Requests tab
             'userAgent', 'timeout', 'retries', 'acceptLanguage', 'respectRobotsTxt', 'allowCookies',
-            'discoverSitemaps', 'enablePageSpeed', 'googleApiKey',
+            'discoverSitemaps', 'enablePageSpeed', 'googleApiKey', 'includeMoz', 'mozApiToken',
             # Filters tab
             'includeExtensions', 'excludeExtensions', 'includePatterns', 'excludePatterns', 'maxFileSize',
             'crawlImages',
@@ -90,6 +90,8 @@ class SettingsManager:
             'discoverSitemaps': True,
             'enablePageSpeed': False,
             'googleApiKey': '',
+            'includeMoz': False,
+            'mozApiToken': '',
 
             # Filter settings
             'includeExtensions': 'html,htm,php,asp,aspx,jsp',
@@ -503,6 +505,8 @@ class SettingsManager:
             'discover_sitemaps': settings['discoverSitemaps'],
             'enable_pagespeed': settings['enablePageSpeed'],
             'google_api_key': settings['googleApiKey'],
+            'include_moz': settings['includeMoz'],
+            'moz_api_token': settings['mozApiToken'],
             'enable_javascript': settings['enableJavaScript'],
             'js_wait_time': settings['jsWaitTime'],
             'js_timeout': settings['jsTimeout'],

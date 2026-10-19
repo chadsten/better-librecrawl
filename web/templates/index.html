@@ -237,6 +237,11 @@
                                             <th class="col-md">Links (Int/Ext)</th>
                                             <th class="col-sm">Images</th>
                                             <th class="col-sm">JS</th>
+                                            <th class="col-sm">Moz PA</th>
+                                            <th class="col-sm">Moz DA</th>
+                                            <th class="col-md">Spam Score</th>
+                                            <th class="col-md">Linking Domains</th>
+                                            <th class="col-md">Inbound Links</th>
                                             <th class="col-sm">Details</th>
                                         </tr>
                                     </thead>
@@ -651,6 +656,23 @@
                             <a href="https://developers.google.com/speed/docs/insights/v5/get-started" target="_blank" style="color: #8b5cf6;">Get API key here</a>
                         </span>
                     </div>
+
+                    <div class="setting-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="includeMoz">
+                            Include Moz
+                        </label>
+                        <span class="setting-help">Look up Moz Page Authority, Domain Authority, Spam Score and links for every indexable page after crawl completes (uses one Moz API row per page)</span>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="mozApiToken">Moz API Token</label>
+                        <input type="password" id="mozApiToken" placeholder="Enter your Moz API token">
+                        <span class="setting-help">
+                            Token from the Moz API dashboard.
+                            <a href="https://moz.com/api/dashboard" target="_blank" style="color: #8b5cf6;">Get a token here</a>
+                        </span>
+                    </div>
                 </div>
 
                 <!-- Filter Settings -->
@@ -821,6 +843,26 @@
                             <label class="checkbox-label">
                                 <input type="checkbox" name="exportFields" value="x_robots_tag">
                                 X-Robots-Tag
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="exportFields" value="moz_page_authority">
+                                Moz Page Authority
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="exportFields" value="moz_domain_authority">
+                                Moz Domain Authority
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="exportFields" value="moz_spam_score">
+                                Moz Spam Score
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="exportFields" value="moz_linking_domains">
+                                Moz Linking Domains
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="exportFields" value="moz_inbound_links">
+                                Moz Inbound Links
                             </label>
                             <label class="checkbox-label">
                                 <input type="checkbox" name="exportFields" value="issues_detected">
