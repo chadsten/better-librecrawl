@@ -111,7 +111,7 @@ from src.core.link_score import link_scores
 from src.core.memory_monitor import MemoryMonitor
 from src.core.memory_profiler import UserMemoryTracker
 from src.core.event_log import CrawlEventLog
-from src.integrations import open_pagerank
+from src.integrations import moz, open_pagerank
 
 
 class WebCrawler:
@@ -250,6 +250,7 @@ class WebCrawler:
             'custom_headers': {},
             'discover_sitemaps': True,
             'enable_pagespeed': False,
+            'include_moz': False,
             'enable_javascript': False,
             'js_wait_time': 3,
             'js_timeout': 30,
@@ -1482,6 +1483,9 @@ class WebCrawler:
             self._run_pagespeed_analysis()
             self.is_running_pagespeed = False
 
+        if self.config.get('include_moz', False):
+            self._run_moz_lookup()
+
         self._update_all_linked_from()
         self._update_link_scores()
         self._run_whole_crawl_checks()
@@ -1509,6 +1513,40 @@ class WebCrawler:
             from src.crawl_db import update_url_fields
             self._save_batch_to_db(force=True)
             update_url_fields(self.crawl_id, results, fields)
+
+    def _run_moz_lookup(self):
+        """Moz URL metrics for every indexable page, published batch by batch.
+
+        A failed lookup keeps what came back and records why in stats['moz'].
+        """
+        if not self.is_running:  # stopped crawls spend no quota
+            return
+        token = self.config.get('moz_api_token', '').strip()
+        if not token:
+            self.stats['moz'] = {'error': 'No Moz API token set'}
+            return
+
+        rows = {r['url']: r for r in self.crawl_results if self.issue_detector._is_indexable_page(r)}
+        print(f"Looking up Moz metrics for {len(rows)} pages...")
+        found, error = 0, None
+        try:
+            for batch in moz.fetch_url_metrics(token, list(rows)):
+                for url, values in batch.items():
+                    rows[url].update(values)
+                self._publish_url_updates([rows[url] for url in batch], moz.FIELDS)
+                found += len(batch)
+                if not self.is_running:
+                    print("Moz lookup cancelled")
+                    break
+        except moz.MozError as e:
+            error = str(e)
+        except Exception as e:  # an unexpected response must not cost the crawl its remaining steps
+            error = f'Unexpected Moz response ({type(e).__name__})'
+            import traceback
+            traceback.print_exc()
+        self.stats['moz'] = {'pages': len(rows), 'found': found, 'error': error}
+        print(f"Moz metrics found for {found} of {len(rows)} pages"
+              + (f" (lookup failed: {error})" if error else ''))
 
     def _run_whole_crawl_checks(self):
         """Issue checks that compare pages with each other, once the crawl ends"""
