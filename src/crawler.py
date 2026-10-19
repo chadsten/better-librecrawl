@@ -12,7 +12,7 @@ import re
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor
-from urllib.robotparser import RobotFileParser
+from protego import Protego
 import nest_asyncio
 
 # Extensions treated as images by the "Crawl Images" setting
@@ -24,6 +24,10 @@ HEAD_CHECK_WORKERS = 5
 # Redirects followed before a URL is reported as a redirect loop
 # (requests defaults to 30, which costs a looping site 30 requests per URL)
 MAX_REDIRECTS = 10
+
+# Stats worked out when a crawl ends and not saved with it, so they're
+# cleared when a saved crawl is loaded or resumed
+POST_CRAWL_STATS = ('open_pagerank', 'moz', 'ai_access')
 
 
 def classify_fetch_error(exc_or_msg):
@@ -106,7 +110,8 @@ from src.core.seo_extractor import SEOExtractor
 from src.core.link_manager import LinkManager
 from src.core.js_renderer import JavaScriptRenderer
 from src.core.sitemap_parser import SitemapParser
-from src.core.issue_detector import IssueDetector
+from src.core.ai_access import ai_robots_access
+from src.core.issue_detector import IssueDetector, is_internal_html_page
 from src.core.link_score import link_scores
 from src.core.memory_monitor import MemoryMonitor
 from src.core.memory_profiler import UserMemoryTracker
@@ -440,6 +445,7 @@ class WebCrawler:
         self.event_log.new_epoch()
         self._head_status_cache.clear()
         self._synthesized_urls.clear()
+        self._robots_cache.clear()
         self.stats = {
             'discovered': 0,
             'crawled': 0,
@@ -628,8 +634,9 @@ class WebCrawler:
             self.stats['discovered'] = crawl_data.get('urls_discovered', 0)
             self.stats['depth'] = crawl_data.get('max_depth_reached', 0)
             self.stats['start_time'] = time.time()  # New start time for resume
-            # Not saved with a crawl; looked up again when the resumed crawl ends
-            self.stats.pop('open_pagerank', None)
+            # Worked out again when the resumed crawl ends
+            for key in POST_CRAWL_STATS:
+                self.stats.pop(key, None)
 
             # Restore queue state from checkpoint
             checkpoint = crawl_data.get('resume_checkpoint', {})
@@ -708,8 +715,9 @@ class WebCrawler:
         self.stats['crawled'] = len(urls)
         self.stats['discovered'] = len(urls)
         self.pages_crawled = len(urls)
-        # Not saved with a crawl; the score left here belongs to the previous one
-        self.stats.pop('open_pagerank', None)
+        # Not saved with a crawl; what's left here belongs to the previous one
+        for key in POST_CRAWL_STATS:
+            self.stats.pop(key, None)
 
         self.link_manager.all_links = links
         self.link_manager.links_set.clear()
@@ -1168,16 +1176,7 @@ class WebCrawler:
                 soup = BeautifulSoup(response.content, 'html.parser')
 
                 # Extract comprehensive data using SEO extractor
-                self.seo_extractor.extract_basic_seo_data(soup, result)
-                self.seo_extractor.extract_meta_tags(soup, result)
-                self.seo_extractor.extract_opengraph_tags(soup, result)
-                self.seo_extractor.extract_twitter_tags(soup, result)
-                self.seo_extractor.extract_json_ld(soup, result)
-                self.seo_extractor.extract_analytics_tracking(soup, response.text, result)
-                self.seo_extractor.extract_images(soup, final_url, result)
-                self.seo_extractor.extract_link_counts(soup, result, self.base_domain)
-                self.seo_extractor.extract_hreflang(soup, result)
-                self.seo_extractor.extract_schema_org(soup, result)
+                self.seo_extractor.extract_page(soup, response.text, final_url, result, self.base_domain)
 
                 # Collect all links (returns only the ones new to this crawl)
                 new_links = self.link_manager.collect_all_links(soup, url, self.crawl_results,
@@ -1300,16 +1299,9 @@ class WebCrawler:
             soup = BeautifulSoup(html_content, 'html.parser')
 
             # Extract comprehensive data
-            self.seo_extractor.extract_basic_seo_data(soup, result)
-            self.seo_extractor.extract_meta_tags(soup, result)
-            self.seo_extractor.extract_opengraph_tags(soup, result)
-            self.seo_extractor.extract_twitter_tags(soup, result)
-            self.seo_extractor.extract_json_ld(soup, result)
-            self.seo_extractor.extract_analytics_tracking(soup, html_content, result)
-            self.seo_extractor.extract_images(soup, final_url, result)
-            self.seo_extractor.extract_link_counts(soup, result, self.base_domain)
-            self.seo_extractor.extract_hreflang(soup, result)
-            self.seo_extractor.extract_schema_org(soup, result)
+            self.seo_extractor.extract_page(soup, html_content, final_url, result, self.base_domain)
+            if page_info['raw_html']:
+                self.seo_extractor.extract_raw_html_stats(page_info['raw_html'], soup, result, self.base_domain)
 
             # Collect all links (returns only the ones new to this crawl)
             new_links = self.link_manager.collect_all_links(soup, url, self.crawl_results,
@@ -1488,7 +1480,14 @@ class WebCrawler:
 
         self._update_all_linked_from()
         self._update_link_scores()
+        self._run_ai_access_checks()
         self._run_whole_crawl_checks()
+
+    def _run_ai_access_checks(self):
+        """Which AI crawlers robots.txt lets reach the crawled pages, for the AI Access tab and issues"""
+        pages = [result for result in self.crawl_results if is_internal_html_page(result)]
+        self.stats['ai_access'], blocked = ai_robots_access(pages, self._robots_for, self.base_url)
+        self._add_whole_crawl_issues(self.issue_detector.detect_ai_bot_issues, blocked)
 
     def _update_link_scores(self):
         """Give internal pages their Link Score once every link is known"""
@@ -1771,35 +1770,31 @@ class WebCrawler:
 
     def _check_robots_txt(self, url):
         """Check if URL is allowed by robots.txt"""
-        try:
-            parsed = urlparse(url)
-            robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+        return self._robots_for(url)['rules'].can_fetch(url, self.config.get('user_agent', '*'))
 
-            if robots_url not in self._robots_cache:
-                rp = RobotFileParser()
-                rp.set_url(robots_url)
-                try:
-                    # Fetch robots.txt with our session (proper User-Agent)
-                    # instead of rp.read() which uses urllib with Python's
-                    # default UA — many servers return 403 for that, causing
-                    # RobotFileParser to set disallow_all=True and block everything.
-                    response = self.session.get(robots_url, timeout=10)
-                    if response.status_code in (401, 403):
-                        rp.disallow_all = True
-                    elif response.status_code >= 400:
-                        rp.allow_all = True
-                    else:
-                        rp.parse(response.text.splitlines())
-                    self._robots_cache[robots_url] = rp
-                except:
-                    return True
+    def _robots_for(self, url):
+        """The robots.txt of url's host: {url, status, text, rules}, fetched once per crawl.
 
-            rp = self._robots_cache[robots_url]
-            user_agent = self.config.get('user_agent', '*')
-            return rp.can_fetch(user_agent, url)
-
-        except Exception:
-            return True
+        Protego matches rules the way Google does (wildcards, longest match).
+        Only a 2xx body holds rules; Google reads any other 4xx as "no rules".
+        A 429, 5xx or failed fetch (status None) also leaves crawling open
+        here, where Google would stop, so the AI Access report flags it.
+        Fetched with our session so servers see our User-Agent.
+        """
+        parsed = urlparse(url)
+        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+        if robots_url not in self._robots_cache:
+            status, text = None, ''
+            try:
+                response = self.session.get(robots_url, timeout=10)
+                status = response.status_code
+                if 200 <= status < 300:
+                    text = response.text
+            except requests.exceptions.RequestException as e:
+                print(f"robots.txt fetch failed for {robots_url}: {e}")
+            self._robots_cache[robots_url] = {'url': robots_url, 'status': status, 'text': text,
+                                              'rules': Protego.parse(text)}
+        return self._robots_cache[robots_url]
 
     def _run_pagespeed_analysis(self):
         """Run PageSpeed analysis on selected pages"""

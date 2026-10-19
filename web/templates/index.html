@@ -218,6 +218,7 @@
                         <button class="tab-btn" onclick="switchTab('links')">Links</button>
                         <button class="tab-btn" onclick="switchTab('issues')">Issues</button>
                         <button class="tab-btn" onclick="switchTab('pagespeed')">PageSpeed</button>
+                        <button class="tab-btn" onclick="switchTab('ai-access')">AI Access</button>
                         <button class="tab-btn" onclick="switchTab('visualization')">Visualization</button>
                     </div>
 
@@ -438,6 +439,36 @@
                                     <div class="pagespeed-placeholder">
                                         <p>🚀 PageSpeed analysis will appear here after crawl completion</p>
                                         <p>Enable PageSpeed Analysis in settings to get Core Web Vitals and performance scores</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="ai-access-tab" class="tab-pane">
+                            <div class="pagespeed-container">
+                                <div class="pagespeed-header">
+                                    <h3>AI Access</h3>
+                                    <p class="pagespeed-description">Which AI crawlers the site's robots.txt lets in. Search bots feed AI answers; training bots only gather training data. Page-level problems are in the Issues tab under AI Search.</p>
+                                </div>
+                                <div class="pagespeed-placeholder" id="aiAccessPlaceholder">
+                                    <p>🤖 AI crawler access will appear here after crawl completion</p>
+                                </div>
+                                <div id="aiAccessResults" style="display: none;">
+                                    <p class="pagespeed-description" id="aiAccessSummary"></p>
+                                    <div class="table-container">
+                                        <table class="data-table" id="aiAccessTable">
+                                            <thead>
+                                                <tr>
+                                                    <th class="col-md">Bot</th>
+                                                    <th class="col-lg">Used by</th>
+                                                    <th class="col-sm">Type</th>
+                                                    <th class="col-sm">robots.txt</th>
+                                                    <th class="col-md">Pages blocked</th>
+                                                    <th class="col-lg">Note</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="aiAccessTableBody"></tbody>
+                                        </table>
                                     </div>
                                 </div>
                             </div>

@@ -587,6 +587,7 @@ function updateCrawlData(data) {
     if (data.stats && data.stats.pagespeed_results) {
         displayPageSpeedResults(data.stats.pagespeed_results);
     }
+    displayAiAccess(data.stats?.ai_access);
 
     // Notify plugins of data update
     if ((changed.urls || changed.links || changed.issues) &&
@@ -1122,6 +1123,7 @@ function clearAllTables() {
     // Clear status codes table (not virtualized)
     const statusCodesBody = document.getElementById('statusCodesTableBody');
     if (statusCodesBody) statusCodesBody.innerHTML = '';
+    displayAiAccess(null);
 
     crawlState.urls = [];
 
@@ -2070,6 +2072,54 @@ function closeUrlDetails() {
     }
 }
 
+// AI Access tab: which AI crawlers robots.txt lets in, from stats.ai_access
+// (src/core/ai_access.py builds it when the crawl ends)
+function aiBotStatus(bot, report) {
+    if (report.robots_unavailable) return 'Unknown';
+    if (!bot.blocked_pages) return 'Allowed';
+    return bot.blocked_pages === report.pages ? 'Blocked' : 'Partly blocked';
+}
+
+function aiAccessSummary(report) {
+    const status = report.robots_status;
+    const parts = [];
+    if (report.robots_unavailable) {
+        parts.push(`robots.txt ${status ? `returned ${status}` : "couldn't be fetched"}. ` +
+                   'Google treats that as blocking the whole site, so fix it before trusting this table.');
+    } else if (status >= 400) {
+        parts.push(`There's no robots.txt (${status}), so every bot is allowed.`);
+    } else {
+        parts.push(`Read from ${report.robots_url} and checked against ${report.pages} crawled pages.`);
+    }
+    if (report.cloudflare_managed) {
+        parts.push('Part of this robots.txt is managed by Cloudflare, in the Cloudflare dashboard rather than on the site.');
+    }
+    if (report.content_signals.length) {
+        parts.push(`Content signals: ${report.content_signals.join('; ')}.`);
+    }
+    return parts.join(' ');
+}
+
+function displayAiAccess(report) {
+    document.getElementById('aiAccessPlaceholder').style.display = report ? 'none' : '';
+    document.getElementById('aiAccessResults').style.display = report ? '' : 'none';
+    const body = document.getElementById('aiAccessTableBody');
+    body.innerHTML = '';
+    if (!report) return;
+
+    document.getElementById('aiAccessSummary').textContent = aiAccessSummary(report);
+    for (const bot of report.bots) {
+        const row = body.insertRow();
+        const percent = report.pages ? Math.round(100 * bot.blocked_pages / report.pages) : 0;
+        const cells = [bot.token, bot.used_by, bot.kind, aiBotStatus(bot, report),
+                       `${percent}% (${bot.blocked_pages})`, bot.note];
+        for (const text of cells) {
+            row.insertCell().textContent = text;
+        }
+        if (bot.flagged) row.style.setProperty('--row-tint', ISSUE_TYPES.warning.tint);
+    }
+}
+
 function displayPageSpeedResults(results) {
     const container = document.getElementById('pagespeedResults');
     if (!container || !results || results.length === 0) {
@@ -2388,6 +2438,7 @@ function loadCrawl() {
                 console.log(`Loading ${saveData.stats.pagespeed_results.length} PageSpeed results...`);
                 displayPageSpeedResults(saveData.stats.pagespeed_results);
             }
+            displayAiAccess(saveData.stats?.ai_access);
 
             // Force refresh of all tables
             setTimeout(() => {

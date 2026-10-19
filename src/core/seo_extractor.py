@@ -3,9 +3,58 @@ import re
 import json
 from urllib.parse import urljoin, urlparse
 
+from bs4 import BeautifulSoup
+from bs4.element import PreformattedString
+
+_WORDS = re.compile(r'\b\w+\b')
+_NOT_TEXT = ('script', 'style', 'template')
+
+
+def visible_word_count(soup):
+    """Words in a page's text, leaving out scripts, styles and comments"""
+    return sum(len(_WORDS.findall(text)) for text in soup.find_all(string=True)
+               if not isinstance(text, PreformattedString) and text.parent.name not in _NOT_TEXT)
+
 
 class SEOExtractor:
     """Extracts SEO-related data from HTML content"""
+
+    @staticmethod
+    def extract_page(soup, html, page_url, result, base_domain):
+        """Run every extractor over a parsed page"""
+        SEOExtractor.extract_basic_seo_data(soup, result)
+        SEOExtractor.extract_meta_tags(soup, result)
+        SEOExtractor.extract_opengraph_tags(soup, result)
+        SEOExtractor.extract_twitter_tags(soup, result)
+        SEOExtractor.extract_json_ld(soup, result)
+        SEOExtractor.extract_analytics_tracking(soup, html, result)
+        SEOExtractor.extract_images(soup, page_url, result)
+        SEOExtractor.extract_link_counts(soup, result, base_domain)
+        SEOExtractor.extract_hreflang(soup, result)
+        SEOExtractor.extract_schema_org(soup, result)
+        SEOExtractor.extract_nosnippet_words(soup, result)
+
+    @staticmethod
+    def extract_raw_html_stats(raw_html, rendered_soup, result, base_domain):
+        """For a JavaScript-rendered page, what a crawler that doesn't run
+        JavaScript finds in the raw HTML (words, H1, internal links), with the
+        rendered page's words counted the same way"""
+        soup = BeautifulSoup(raw_html, 'html.parser')
+        raw = {'url': result['url'], 'internal_links': 0, 'external_links': 0}
+        SEOExtractor.extract_basic_seo_data(soup, raw)
+        SEOExtractor.extract_link_counts(soup, raw, base_domain)
+        result['raw_word_count'] = visible_word_count(soup)
+        result['rendered_word_count'] = visible_word_count(rendered_soup)
+        result['raw_h1'] = raw['h1']
+        result['raw_internal_links'] = raw['internal_links']
+
+    @staticmethod
+    def extract_nosnippet_words(soup, result):
+        """Words inside data-nosnippet elements, which Google won't quote in snippets or AI answers"""
+        regions = soup.find_all(attrs={'data-nosnippet': True})
+        result['nosnippet_words'] = sum(
+            len(_WORDS.findall(region.get_text(' '))) for region in regions
+            if not region.find_parent(attrs={'data-nosnippet': True}))
 
     @staticmethod
     def extract_basic_seo_data(soup, result):
@@ -30,8 +79,7 @@ class SEOExtractor:
 
         # Count words
         text_content = soup.get_text()
-        words = re.findall(r'\b\w+\b', text_content)
-        result['word_count'] = len(words)
+        result['word_count'] = len(_WORDS.findall(text_content))
 
         # Extract language
         html_tag = soup.find('html')

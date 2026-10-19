@@ -7,6 +7,7 @@ from collections import defaultdict
 from fnmatch import fnmatch
 from urllib.parse import urljoin, urlparse
 
+from src.core.ai_access import AI_BOTS, BOT_KINDS
 from src.core.link_manager import normalize_url
 
 # Near-duplicate detection is bounded so a large site can never hold a crawl in
@@ -16,6 +17,15 @@ DUPLICATION_TIME_BUDGET_SECONDS = 120
 DUPLICATION_EXAMPLES_PER_PAGE = 5
 
 _TOKEN_SPLIT = re.compile(r'[^\w]+')
+
+# A page "needs JavaScript" when rendering adds this much: more than half
+# again the words or internal links of the raw HTML, and at least this many
+JS_ONLY_RATIO = 1.5
+JS_ONLY_MIN_WORDS = 50
+JS_ONLY_MIN_LINKS = 5
+
+# max-snippet values below this leave AI features little to quote
+SHORT_MAX_SNIPPET = 50
 
 # Robots directives whose own syntax contains a colon ("max-snippet:50"), so
 # the colon does not mean a crawler name ("bingbot: noindex")
@@ -43,29 +53,37 @@ def has_alt_attribute(image):
     return True
 
 
-def robots_directives(value):
-    """The directives in a meta robots or X-Robots-Tag value that apply to Google.
+def robots_directives(value, crawler='googlebot'):
+    """The directives in a meta robots or X-Robots-Tag value that apply to one
+    crawler, as {name: setting}: "noindex, max-snippet:50" gives
+    {'noindex': '', 'max-snippet': '50'}.
 
     X-Robots-Tag can aim directives at one crawler ("bingbot: noindex,
-    nofollow"); those count only when unscoped or aimed at googlebot.
+    nofollow"); those count only when unscoped or aimed at `crawler`.
     "none" is shorthand for noindex, nofollow.
     """
-    directives = set()
+    directives = {}
     agent = None
     for token in (value or '').lower().split(','):
         name, colon, rest = token.partition(':')
         if colon and name.strip() not in _ROBOTS_DIRECTIVES_WITH_VALUES:
             agent, token = name.strip(), rest
-        if agent in (None, 'googlebot'):
-            directives.add(token.split(':')[0].strip())
+        name, _, setting = token.partition(':')
+        if agent in (None, crawler) and name.strip():
+            directives[name.strip()] = setting.strip()
     if 'none' in directives:
-        directives |= {'noindex', 'nofollow'}
+        directives.update(noindex='', nofollow='')
     return directives
 
 
-def page_robots_directives(result):
-    """Robots directives a page sets in its meta robots tag or X-Robots-Tag header"""
-    return robots_directives(result.get('robots')) | robots_directives(result.get('x_robots_tag'))
+def page_robots_directives(result, crawler='googlebot'):
+    """Robots directives a page sets for one crawler: its meta robots tag, a
+    meta tag named after the crawler (<meta name="bingbot">) and its
+    X-Robots-Tag header"""
+    meta_tags = result.get('meta_tags') or {}
+    return (robots_directives(result.get('robots'), crawler)
+            | robots_directives(meta_tags.get(crawler), crawler)
+            | robots_directives(result.get('x_robots_tag'), crawler))
 
 
 def is_internal_html_page(result):
@@ -133,6 +151,8 @@ class IssueDetector:
             self._check_structured_data_issues(result, issues)
             self._check_performance_issues(result, issues)
             self._check_indexability_issues(result, issues)
+            self._check_ai_snippet_issues(result, issues)
+            self._check_js_only_content_issues(result, issues)
             self._check_broken_image_issues(result, issues)
 
         # Add all detected issues
@@ -449,10 +469,11 @@ class IssueDetector:
             })
 
     def _check_indexability_issues(self, result, issues):
-        """Check for noindex/nofollow in the meta robots tag or X-Robots-Tag header"""
+        """Check for noindex/nofollow in the meta robots or googlebot tags or the X-Robots-Tag header"""
         url = result.get('url', '')
         sources = {
             'meta robots tag': robots_directives(result.get('robots')),
+            'meta googlebot tag': robots_directives((result.get('meta_tags') or {}).get('googlebot')),
             'X-Robots-Tag header': robots_directives(result.get('x_robots_tag')),
         }
 
@@ -471,6 +492,65 @@ class IssueDetector:
                     'issue': issue,
                     'details': f"{details} (in the {' and '.join(found_in)})"
                 })
+
+    def _check_ai_snippet_issues(self, result, issues):
+        """Robots directives that keep a page's text out of AI answers or cut what they quote"""
+        url = result.get('url', '')
+        google = page_robots_directives(result)
+        if 'noindex' in google:
+            return  # already reported, and it keeps the page out of everything
+
+        def add(issue_type, issue, details):
+            issues.append({'url': url, 'type': issue_type, 'category': 'AI Search',
+                           'issue': issue, 'details': details})
+
+        max_snippet = google.get('max-snippet', '')
+        if 'nosnippet' in google or max_snippet == '0':
+            add('warning', 'Excluded from Google AI Answers',
+                'nosnippet (or max-snippet:0) keeps the page\'s text out of AI Overviews and AI Mode')
+        elif max_snippet.isdigit() and int(max_snippet) < SHORT_MAX_SNIPPET:
+            add('info', 'AI Snippet Limited',
+                f'max-snippet:{max_snippet} limits how much of the page Google\'s AI features can quote')
+
+        bing = page_robots_directives(result, 'bingbot')
+        if 'noarchive' in bing:
+            add('warning', 'Excluded from Copilot Answers',
+                'noarchive stops Microsoft Copilot from using the page\'s content in answers')
+        elif 'nocache' in bing:
+            add('info', 'Copilot Limited to Title and Snippet',
+                'nocache limits Microsoft Copilot to the page\'s URL, title and snippet')
+
+        hidden_words = result.get('nosnippet_words') or 0
+        if hidden_words:
+            add('info', 'Text Hidden from AI Snippets',
+                f'{hidden_words} words are inside data-nosnippet elements, which Google\'s AI features won\'t quote')
+
+    def _check_js_only_content_issues(self, result, issues):
+        """Content that only appears once JavaScript runs. Set for pages crawled
+        with JavaScript rendering, which also record the raw HTML's numbers."""
+        raw_words = result.get('raw_word_count')
+        if raw_words is None:
+            return
+
+        missing = []
+        words = result.get('rendered_word_count') or 0
+        if words - raw_words >= JS_ONLY_MIN_WORDS and words > JS_ONLY_RATIO * raw_words:
+            missing.append(f'{words - raw_words} of {words} words')
+        if result.get('h1') and not result.get('raw_h1'):
+            missing.append('the H1')
+        raw_links, links = result.get('raw_internal_links') or 0, result.get('internal_links') or 0
+        if links - raw_links >= JS_ONLY_MIN_LINKS and links > JS_ONLY_RATIO * raw_links:
+            missing.append(f'{links - raw_links} of {links} internal links')
+
+        if missing:
+            issues.append({
+                'url': result.get('url', ''),
+                'type': 'warning',
+                'category': 'AI Search',
+                'issue': 'Content Needs JavaScript',
+                'details': f"Only there after JavaScript runs: {', '.join(missing)}. "
+                           "The ChatGPT, Claude and Perplexity crawlers don't run JavaScript, so they miss it."
+            })
 
     def _check_broken_image_issues(self, result, issues):
         """Check for broken image URLs on the page"""
@@ -532,6 +612,36 @@ class IssueDetector:
                         'details': f"Same {label} as {others} other page{'s' if others != 1 else ''} "
                                    f"(\"{text}\"): " + ', '.join(examples)
                                    + (f" (+{more} more)" if more > 0 else '')
+                    })
+
+        with self.issues_lock:
+            self.detected_issues.extend(issues)
+
+    def detect_ai_bot_issues(self, all_results, blocked):
+        """Flag pages robots.txt keeps AI search bots or live fetchers off.
+
+        blocked maps each AI bot token to the URLs it may not fetch. Training
+        bots raise no issue: blocking them doesn't take a page out of AI answers.
+        """
+        issues = []
+        for result in all_results:
+            url = result['url']
+            if self._should_exclude(url):
+                continue
+            by_kind = defaultdict(list)
+            for token, urls in blocked.items():
+                if url in urls:
+                    by_kind[AI_BOTS[token]['kind']].append(token)
+            for kind, tokens in by_kind.items():
+                spec = BOT_KINDS[kind]
+                if spec['issue']:
+                    issues.append({
+                        'url': url,
+                        'type': spec['type'],
+                        'category': 'AI Search',
+                        'issue': spec['issue'],
+                        'details': 'robots.txt blocks ' + ', '.join(
+                            f"{token} ({AI_BOTS[token]['used_by']})" for token in tokens)
                     })
 
         with self.issues_lock:

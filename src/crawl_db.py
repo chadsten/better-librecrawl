@@ -14,6 +14,15 @@ from src.integrations import moz
 import os
 DB_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'users.db')
 
+# Page fields the AI Access checks read, saved with each crawled row: column -> SQL type
+AI_ACCESS_COLUMNS = {
+    'nosnippet_words': 'INTEGER',
+    'raw_word_count': 'INTEGER',
+    'rendered_word_count': 'INTEGER',
+    'raw_h1': 'TEXT',
+    'raw_internal_links': 'INTEGER',
+}
+
 @contextmanager
 def get_db():
     """Context manager for database connections"""
@@ -153,6 +162,13 @@ def init_crawl_tables():
 
         # Migration: Moz metrics, set after the crawl
         for column, column_type in moz.METRICS.values():
+            try:
+                cursor.execute(f'ALTER TABLE crawled_urls ADD COLUMN {column} {column_type}')
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+        # Migration: page fields the AI Access checks read
+        for column, column_type in AI_ACCESS_COLUMNS.items():
             try:
                 cursor.execute(f'ALTER TABLE crawled_urls ADD COLUMN {column} {column_type}')
             except sqlite3.OperationalError:
@@ -344,11 +360,12 @@ def save_url_batch(crawl_id, urls):
                     url_data.get('render_time'),
                     url_data.get('link_check_only', False),
                     url_data.get('x_robots_tag'),
-                    url_data.get('redirected_to')
+                    url_data.get('redirected_to'),
+                    *(url_data.get(column) for column in AI_ACCESS_COLUMNS)
                 )
                 rows.append(row)
 
-            cursor.executemany('''
+            cursor.executemany(f'''
                 INSERT INTO crawled_urls (
                     crawl_id, url, status_code, content_type, size, is_internal, depth,
                     title, meta_description, h1, h2, h3, word_count,
@@ -356,8 +373,9 @@ def save_url_batch(crawl_id, urls):
                     meta_tags, og_tags, twitter_tags, json_ld, analytics, images,
                     hreflang, schema_org, redirects, linked_from,
                     external_links, internal_links, response_time, javascript_rendered,
-                    error_type, render_time, link_check_only, x_robots_tag, redirected_to
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    error_type, render_time, link_check_only, x_robots_tag, redirected_to,
+                    {', '.join(AI_ACCESS_COLUMNS)}
+                ) VALUES ({', '.join('?' * len(rows[0]))})
             ''', rows)
 
             print(f"Saved {len(urls)} URLs to database for crawl {crawl_id}")

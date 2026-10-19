@@ -707,9 +707,12 @@ def test_x_robots_tag_header():
 
         from src.core.issue_detector import robots_directives
         result('"none" means noindex and nofollow',
-               {'noindex', 'nofollow'} <= robots_directives('none'))
-        result('max-snippet:-1 is a directive, not a crawler name',
-               robots_directives('max-snippet:-1, noindex') >= {'max-snippet', 'noindex'})
+               {'noindex', 'nofollow'} <= robots_directives('none').keys())
+        result('max-snippet:-1 is a directive, not a crawler name, and keeps its value',
+               robots_directives('max-snippet:-1, noindex') == {'max-snippet': '-1', 'noindex': ''})
+        result('directives aimed at another crawler are kept apart',
+               robots_directives('bingbot: noarchive, nocache', 'bingbot') == {'noarchive': '', 'nocache': ''}
+               and robots_directives('bingbot: noarchive, nocache') == {})
     finally:
         a.shutdown()
 
@@ -815,8 +818,9 @@ def test_page_fetch_is_one_request():
     }, hits=hits), site)
     try:
         crawler = crawl(f'http://127.0.0.1:{site}/', max_file_size=2000)
-        result('pages are fetched with a single GET', sorted(hits) == ['GET /', 'GET /big', 'GET /page'],
-               str(sorted(hits)))
+        pages = sorted(hit for hit in hits if hit != 'GET /robots.txt')  # read once, for AI Access
+        result('pages are fetched with a single GET', pages == ['GET /', 'GET /big', 'GET /page'],
+               str(pages))
         big = next(r for r in crawler.crawl_results if r['url'].endswith('/big'))
         result('a file over the size limit is still turned away',
                big.get('error_type') == 'file_too_large', str(big.get('error')))
@@ -977,6 +981,146 @@ def test_link_score_after_crawl():
         a.shutdown()
 
 
+def test_robots_rules_match_google():
+    """robots.txt wildcards and longest-match rules were ignored (Python's
+    robotparser), and a 403 robots.txt blocked the whole site where Google
+    reads any 4xx but 429 as "no rules"."""
+    site, forbidden = BASE_PORT + 51, BASE_PORT + 52
+    hits = []
+    a = serve(make_handler({
+        '/robots.txt': 'User-agent: *\nDisallow: /*?\nDisallow: /private\nAllow: /private/open\n',
+        '/': html('<a href="/a?x=1">q</a><a href="/private/secret">s</a>'
+                  '<a href="/private/open">o</a><a href="/b">b</a>'),
+        '/a?x=1': html('<p>q</p>'), '/private/secret': html('<p>s</p>'),
+        '/private/open': html('<p>o</p>'), '/b': html('<p>b</p>'),
+    }, hits=hits), site)
+    b = serve(make_handler({
+        '/robots.txt': {'status': 403, 'body': 'forbidden'},
+        '/': html('<a href="/x">x</a>'), '/x': html('<p>x</p>'),
+    }), forbidden)
+    try:
+        crawler = crawl(f'http://127.0.0.1:{site}/', respect_robots=True)
+        got = sorted(r['url'].split(str(site), 1)[1] for r in crawler.crawl_results)
+        result('wildcard and longest-match rules are followed',
+               got == ['/', '/b', '/private/open'] and 'GET /a?x=1' not in hits, str(got))
+
+        crawler = crawl(f'http://127.0.0.1:{forbidden}/', respect_robots=True)
+        got = sorted(r['url'].split(str(forbidden), 1)[1] for r in crawler.crawl_results)
+        result('a 403 robots.txt means no rules, as Google reads it', got == ['/', '/x'], str(got))
+    finally:
+        a.shutdown()
+        b.shutdown()
+
+
+def test_ai_access_robots_matrix():
+    """The AI Access tab reports which AI bots robots.txt keeps out; blocked
+    search bots and live fetchers become page issues, training bots don't."""
+    site = BASE_PORT + 53
+    a = serve(make_handler({
+        '/robots.txt': '# BEGIN Cloudflare Managed content\nUser-agent: *\n'
+                       'Content-signal: search=yes, ai-train=no\nAllow: /\n\n'
+                       'User-agent: GPTBot\nDisallow: /\n# END Cloudflare Managed Content\n\n'
+                       'User-agent: PerplexityBot\nDisallow: /blog\n\n'
+                       'User-agent: ChatGPT-User\nDisallow: /\n',
+        '/': html('<a href="/blog/post">p</a><a href="/about">a</a>'),
+        '/blog/post': html('<p>post</p>'), '/about': html('<p>about</p>'),
+    }), site)
+    try:
+        crawler = crawl(f'http://127.0.0.1:{site}/')
+        report = crawler.stats.get('ai_access') or {}
+        bots = {bot['token']: (bot['blocked_pages'], bot['flagged']) for bot in report.get('bots', [])}
+        result('blocked pages are counted per bot, and only search bots are flagged',
+               report.get('pages') == 3 and bots.get('GPTBot') == (3, False)
+               and bots.get('PerplexityBot') == (1, True) and bots.get('ChatGPT-User') == (3, False)
+               and bots.get('OAI-SearchBot') == (0, False), str(bots))
+        result('Cloudflare managed rules and content signals are spotted',
+               report.get('cloudflare_managed') and report.get('content_signals') == ['search=yes, ai-train=no']
+               and report.get('robots_status') == 200 and not report.get('robots_unavailable'), str(report))
+
+        def ai_issues(path):
+            return {i['issue']: i['details'] for i in issues_for(crawler, path) if i['category'] == 'AI Search'}
+
+        post, about = ai_issues('/blog/post'), ai_issues('/about')
+        result('a page blocked for a search bot is flagged with the bot named',
+               'PerplexityBot (Perplexity search)' in post.get('Blocked for AI Search Bots', ''), str(post))
+        result('live fetchers get an info issue and training bots none',
+               set(about) == {'Blocked for AI Live Fetchers'} and 'GPTBot' not in str(post), str(about))
+    finally:
+        a.shutdown()
+
+
+def test_ai_snippet_and_copilot_controls():
+    """Robots directives that keep text out of Google's AI features or Copilot become issues."""
+    site = BASE_PORT + 54
+    paths = ['/nosnip', '/short', '/long', '/unlimited', '/bing', '/bingcache', '/hidden', '/gnoindex']
+    a = serve(make_handler({
+        '/': html(''.join(f'<a href="{p}">{p}</a>' for p in paths)),
+        '/nosnip': page('n', head='<meta name="robots" content="nosnippet">'),
+        '/short': page('s', head='<meta name="robots" content="max-snippet:20">'),
+        '/long': page('l', head='<meta name="robots" content="max-snippet:200">'),
+        '/unlimited': page('u', head='<meta name="robots" content="max-snippet:-1">'),
+        '/bing': page('b', head='<meta name="bingbot" content="noarchive">'),
+        '/bingcache': {'body': html('<p>c</p>'), 'headers': {'X-Robots-Tag': 'bingbot: nocache'}},
+        '/hidden': html('<p>shown</p><div data-nosnippet><p>three hidden words</p>'
+                        '<span data-nosnippet>nested</span></div>'),
+        '/gnoindex': page('g', head='<meta name="googlebot" content="noindex, nosnippet">'),
+    }), site)
+    try:
+        crawler = crawl(f'http://127.0.0.1:{site}/')
+        got = {p: sorted(i['issue'] for i in issues_for(crawler, p) if i['category'] == 'AI Search')
+               for p in paths}
+        result('each control raises its own issue', got == {
+            '/nosnip': ['Excluded from Google AI Answers'],
+            '/short': ['AI Snippet Limited'],
+            '/long': [], '/unlimited': [],
+            '/bing': ['Excluded from Copilot Answers'],
+            '/bingcache': ['Copilot Limited to Title and Snippet'],
+            '/hidden': ['Text Hidden from AI Snippets'],
+            '/gnoindex': [],
+        }, str(got))
+        hidden = next(i['details'] for i in issues_for(crawler, '/hidden') if i['category'] == 'AI Search')
+        result('data-nosnippet words are counted once', hidden.startswith('4 words'), hidden)
+        result('a googlebot meta noindex counts as noindex',
+               any(i['issue'] == 'Noindex Tag Present' and 'meta googlebot tag' in i['details']
+                   for i in issues_for(crawler, '/gnoindex')))
+    finally:
+        a.shutdown()
+
+
+def test_js_only_content():
+    """With JavaScript rendering on, content that only appears after scripts
+    run is flagged, since most AI crawlers read the raw HTML."""
+    if not _playwright_available():
+        result('js-only content', True, 'skipped, playwright not installed')
+        return
+
+    site = BASE_PORT + 55
+    filler = 'word ' * 120
+    links = ''.join(f"<a href='/p{n}'>p{n}</a>" for n in range(8))  # single quotes: it sits in a JS string
+    a = serve(make_handler({
+        '/spa': html('<div id="root"></div><script>document.getElementById("root").innerHTML = '
+                     f'"<h1>Built by script</h1><p>{filler}</p>{links}";</script>'),
+        '/static': html(f'<h1>Server rendered</h1><p>{filler}</p>{links}'),
+    }), site)
+    try:
+        crawler = crawl(f'http://127.0.0.1:{site}/spa', max_depth=0, enable_javascript=True,
+                        js_wait_time=0, js_max_concurrent_pages=1, timeout=180)
+        crawler_static = crawl(f'http://127.0.0.1:{site}/static', max_depth=0, enable_javascript=True,
+                               js_wait_time=0, js_max_concurrent_pages=1, timeout=180)
+        spa = [i['details'] for i in issues_for(crawler, '/spa') if i['issue'] == 'Content Needs JavaScript']
+        result('script-built content is flagged with what is missing',
+               len(spa) == 1 and 'the H1' in spa[0] and '8 of 8 internal links' in spa[0], str(spa))
+        result('a server-rendered page is not flagged',
+               not any(i['issue'] == 'Content Needs JavaScript' for i in issues_for(crawler_static, '/static')))
+        row = crawler.crawl_results[0]
+        result('raw and rendered numbers are kept on the row',
+               row.get('raw_h1') == '' and row.get('rendered_word_count', 0) > row.get('raw_word_count', 0),
+               str({k: row.get(k) for k in ('raw_word_count', 'rendered_word_count', 'raw_h1',
+                                            'raw_internal_links')}))
+    finally:
+        a.shutdown()
+
+
 @contextmanager
 def temp_crawl_db():
     """Point crawl_db at a throwaway database so tests never touch data/users.db"""
@@ -1007,6 +1151,20 @@ def test_new_fields_survive_the_database():
                and row.get('redirected_to') == 'http://example.test/new'
                and row.get('redirects') == [{'url': 'http://example.test/old', 'status_code': 301}],
                str({k: row.get(k) for k in ('x_robots_tag', 'redirected_to', 'redirects')}))
+
+
+def test_ai_access_fields_survive_the_database():
+    """The page fields the AI Access checks read are saved with each row."""
+    from src.crawl_db import AI_ACCESS_COLUMNS
+
+    fields = {'nosnippet_words': 4, 'raw_word_count': 1, 'rendered_word_count': 132,
+              'raw_h1': '', 'raw_internal_links': 0}
+    with temp_crawl_db() as crawl_db:
+        crawl_db.save_url_batch(1, [{'url': 'http://example.test/spa', 'status_code': 200, **fields}])
+        row = crawl_db.load_crawled_urls(1)[0]
+        got = {k: row.get(k) for k in AI_ACCESS_COLUMNS}
+        result('AI Access fields are saved and loaded', got == fields and fields.keys() == AI_ACCESS_COLUMNS.keys(),
+               str(got))
 
 
 def test_post_crawl_updates_reach_the_database():
@@ -1431,7 +1589,12 @@ TESTS = (
     test_list_mode,
     test_link_score_rules,
     test_link_score_after_crawl,
+    test_robots_rules_match_google,
+    test_ai_access_robots_matrix,
+    test_ai_snippet_and_copilot_controls,
+    test_js_only_content,
     test_new_fields_survive_the_database,
+    test_ai_access_fields_survive_the_database,
     test_post_crawl_updates_reach_the_database,
     test_open_pagerank_lookup,
     test_open_pagerank_failures,

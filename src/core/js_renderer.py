@@ -2,7 +2,7 @@
 import asyncio
 import threading
 import time
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright, Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
 from urllib.parse import urlparse
 
 
@@ -121,6 +121,14 @@ class JavaScriptRenderer:
         hops.reverse()
         return hops
 
+    @staticmethod
+    async def _raw_html(response):
+        """The HTML the server sent, before any JavaScript ran ('' if the body is unavailable)"""
+        try:
+            return await response.text() if response else ''
+        except PlaywrightError:
+            return ''
+
     async def render_page(self, url):
         """
         Render a page with JavaScript and return the HTML content
@@ -130,12 +138,13 @@ class JavaScriptRenderer:
             final_url is where the page ended up after any redirects.
             page_info carries response_ms (the server's own response, excluding
             the configured render wait), render_ms (the whole render), the
-            X-Robots-Tag header and the redirect hops. Keeping the timings
+            X-Robots-Tag header, the redirect hops and the raw HTML the server
+            sent before JavaScript ran. Keeping the timings
             apart matters because js_wait_time is a deliberate sleep, and
             counting it as response time flags every page as slow.
         """
         page = None
-        empty_info = {'response_ms': 0.0, 'render_ms': 0.0, 'x_robots_tag': '', 'redirects': []}
+        empty_info = {'response_ms': 0.0, 'render_ms': 0.0, 'x_robots_tag': '', 'redirects': [], 'raw_html': ''}
         try:
             page = await self.get_page()
             if not page:
@@ -165,7 +174,8 @@ class JavaScriptRenderer:
                 return html_content, status_code, None, page.url, {
                     'response_ms': response_ms, 'render_ms': render_ms,
                     'x_robots_tag': x_robots_tag or '',
-                    'redirects': await self._redirect_hops(response)}
+                    'redirects': await self._redirect_hops(response),
+                    'raw_html': await self._raw_html(response)}
 
             except PlaywrightTimeoutError:
                 return None, 0, "JavaScript rendering timeout", None, empty_info
