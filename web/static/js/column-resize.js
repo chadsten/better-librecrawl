@@ -22,8 +22,8 @@ class ColumnResizer {
             // Don't add resizer to last column
             if (index === headerCells.length - 1) return;
 
-            // Make the header cell positioned
-            th.style.position = 'relative';
+            // Header cells are position: sticky (styles.css), which also
+            // anchors the grip. Don't set position here: relative unsticks them.
 
             // Create resize grip
             const grip = document.createElement('div');

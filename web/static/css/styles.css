@@ -410,35 +410,71 @@ body {
 .table-container {
     flex: 1;
     overflow: auto;
-    padding: 20px;
+    /* margin, not padding: sticky headers stop at the padding edge, which
+       left a strip above them where scrolled rows showed through */
+    margin: 20px;
     position: relative;
     height: 700px;
 }
 
+/* Columns take their width from the col-* class on their header cell. With
+   table-layout: fixed the table grows to fit those widths, so a wide table
+   scrolls sideways instead of squeezing every column to the screen width. */
 .data-table {
+    /* Opaque, because the sticky header and pinned first column must hide
+       the cells scrolling underneath them */
+    --table-bg: #24273a;
+    --row-tint: transparent;
     width: 100%;
     border-collapse: collapse;
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--table-bg);
     border-radius: 8px;
-    overflow: hidden;
     table-layout: fixed;
 }
 
+.data-table .col-xl { width: 420px; }
+.data-table .col-lg { width: 320px; }
+.data-table .col-md { width: 190px; }
+.data-table .col-sm { width: 120px; }
+
 .data-table th {
-    background: rgba(124, 58, 237, 0.12);
+    background: linear-gradient(rgba(124, 58, 237, 0.12), rgba(124, 58, 237, 0.12)), var(--table-bg);
     padding: 14px 18px;
     text-align: left;
     font-weight: 700;
     font-size: 13px;
     color: #a78bfa;
-    border-bottom: 1px solid #475569;
+    /* a shadow, not a border: collapsed borders don't travel with sticky cells */
+    box-shadow: inset 0 -1px 0 #475569;
     text-transform: uppercase;
     letter-spacing: 0.8px;
     white-space: nowrap;
-    position: relative;
+    /* the header row stays visible while scrolling down */
+    position: sticky;
+    top: 0;
+    z-index: 2;
     min-width: 80px;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* The first column (the URL) stays pinned while scrolling sideways. Spacer
+   rows from the virtual scroller span every column, so they're left alone. */
+.data-table th:first-child,
+.data-table td:first-child:not([colspan]) {
+    position: sticky;
+    left: 0;
+}
+
+.data-table th:first-child {
+    z-index: 3;
+    box-shadow: inset 0 -1px 0 #475569, inset -1px 0 0 #475569;
+}
+
+.data-table td:first-child:not([colspan]) {
+    z-index: 1;
+    background: linear-gradient(var(--row-tint), var(--row-tint)), var(--table-bg);
+    box-shadow: inset -1px 0 0 #475569;
 }
 
 .data-table td {
@@ -452,12 +488,16 @@ body {
     text-overflow: ellipsis;
 }
 
+.data-table tbody tr {
+    background: var(--row-tint);
+}
+
 .data-table tbody tr:hover {
-    background: rgba(255, 255, 255, 0.08);
+    --row-tint: rgba(255, 255, 255, 0.08);
 }
 
 .data-table tbody tr:nth-child(even) {
-    background: rgba(255, 255, 255, 0.02);
+    --row-tint: rgba(255, 255, 255, 0.02);
 }
 
 /* Status Bar */
@@ -984,55 +1024,6 @@ body {
     flex: 1;
     overflow-y: auto;
     min-height: 0;
-}
-
-.links-section .data-table {
-    table-layout: fixed;
-}
-
-.links-section .data-table th:nth-child(1),
-.links-section .data-table td:nth-child(1) {
-    width: 22%;
-    max-width: 300px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.links-section .data-table th:nth-child(2),
-.links-section .data-table td:nth-child(2) {
-    width: 30%;
-    max-width: 400px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.links-section .data-table th:nth-child(3),
-.links-section .data-table td:nth-child(3) {
-    width: 22%;
-    max-width: 200px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.links-section .data-table th:nth-child(4),
-.links-section .data-table td:nth-child(4) {
-    width: 13%;
-    max-width: 150px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.links-section .data-table th:nth-child(5),
-.links-section .data-table td:nth-child(5) {
-    width: 13%;
-    max-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
 
 /* PageSpeed Results */

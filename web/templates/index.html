@@ -203,21 +203,21 @@
                                 <table class="data-table" id="overviewTable">
                                     <thead>
                                         <tr>
-                                            <th>Address</th>
-                                            <th>Status</th>
-                                            <th>Title</th>
-                                            <th>Meta Desc</th>
-                                            <th>H1</th>
-                                            <th>Keywords</th>
-                                            <th>Words</th>
-                                            <th>Response (ms)</th>
-                                            <th>Analytics</th>
-                                            <th>OG Tags</th>
-                                            <th>JSON-LD</th>
-                                            <th>Links (Int/Ext)</th>
-                                            <th>Images</th>
-                                            <th>JS</th>
-                                            <th>Details</th>
+                                            <th class="col-xl">Address</th>
+                                            <th class="col-sm">Status</th>
+                                            <th class="col-lg">Title</th>
+                                            <th class="col-lg">Meta Desc</th>
+                                            <th class="col-lg">H1</th>
+                                            <th class="col-md">Keywords</th>
+                                            <th class="col-sm">Words</th>
+                                            <th class="col-md">Response (ms)</th>
+                                            <th class="col-md">Analytics</th>
+                                            <th class="col-sm">OG Tags</th>
+                                            <th class="col-sm">JSON-LD</th>
+                                            <th class="col-md">Links (Int/Ext)</th>
+                                            <th class="col-sm">Images</th>
+                                            <th class="col-sm">JS</th>
+                                            <th class="col-sm">Details</th>
                                         </tr>
                                     </thead>
                                     <tbody id="overviewTableBody">
@@ -232,11 +232,11 @@
                                 <table class="data-table" id="internalTable">
                                     <thead>
                                         <tr>
-                                            <th>Address</th>
-                                            <th>Status</th>
-                                            <th>Content Type</th>
-                                            <th>Size</th>
-                                            <th>Title</th>
+                                            <th class="col-xl">Address</th>
+                                            <th class="col-sm">Status</th>
+                                            <th class="col-md">Content Type</th>
+                                            <th class="col-sm">Size</th>
+                                            <th class="col-lg">Title</th>
                                         </tr>
                                     </thead>
                                     <tbody id="internalTableBody">
@@ -251,11 +251,11 @@
                                 <table class="data-table" id="externalTable">
                                     <thead>
                                         <tr>
-                                            <th>Address</th>
-                                            <th>Status</th>
-                                            <th>Content Type</th>
-                                            <th>Size</th>
-                                            <th>Title</th>
+                                            <th class="col-xl">Address</th>
+                                            <th class="col-sm">Status</th>
+                                            <th class="col-md">Content Type</th>
+                                            <th class="col-sm">Size</th>
+                                            <th class="col-lg">Title</th>
                                         </tr>
                                     </thead>
                                     <tbody id="externalTableBody">
@@ -304,11 +304,11 @@
                                             <table class="data-table" id="internalLinksTable">
                                                 <thead>
                                                     <tr>
-                                                        <th>Source URL</th>
-                                                        <th>Target URL</th>
-                                                        <th>Status</th>
-                                                        <th>Anchor Text</th>
-                                                        <th>Placement</th>
+                                                        <th class="col-xl">Source URL</th>
+                                                        <th class="col-xl">Target URL</th>
+                                                        <th class="col-sm">Status</th>
+                                                        <th class="col-lg">Anchor Text</th>
+                                                        <th class="col-md">Placement</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody id="internalLinksTableBody">
@@ -336,11 +336,11 @@
                                             <table class="data-table" id="externalLinksTable">
                                                 <thead>
                                                     <tr>
-                                                        <th>Source URL</th>
-                                                        <th>Target URL</th>
-                                                        <th>Status</th>
-                                                        <th>Domain</th>
-                                                        <th>Placement</th>
+                                                        <th class="col-xl">Source URL</th>
+                                                        <th class="col-xl">Target URL</th>
+                                                        <th class="col-sm">Status</th>
+                                                        <th class="col-md">Domain</th>
+                                                        <th class="col-md">Placement</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody id="externalLinksTableBody">
@@ -374,11 +374,11 @@
                                 <table class="data-table" id="issuesTable">
                                     <thead>
                                         <tr>
-                                            <th style="width: 35%;">URL</th>
-                                            <th style="width: 10%;">Type</th>
-                                            <th style="width: 15%;">Category</th>
-                                            <th style="width: 20%;">Issue</th>
-                                            <th style="width: 20%;">Details</th>
+                                            <th class="col-xl">URL</th>
+                                            <th class="col-sm">Type</th>
+                                            <th class="col-md">Category</th>
+                                            <th class="col-lg">Issue</th>
+                                            <th class="col-xl">Details</th>
                                         </tr>
                                     </thead>
                                     <tbody id="issuesTableBody">
@@ -797,6 +797,10 @@
                             <label class="checkbox-label">
                                 <input type="checkbox" name="exportFields" value="robots">
                                 Robots Meta
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" name="exportFields" value="x_robots_tag">
+                                X-Robots-Tag
                             </label>
                             <label class="checkbox-label">
                                 <input type="checkbox" name="exportFields" value="issues_detected">

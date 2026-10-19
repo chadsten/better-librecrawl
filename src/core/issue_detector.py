@@ -15,6 +15,11 @@ DUPLICATION_EXAMPLES_PER_PAGE = 5
 
 _TOKEN_SPLIT = re.compile(r'[^\w]+')
 
+# Robots directives whose own syntax contains a colon ("max-snippet:50"), so
+# the colon does not mean a crawler name ("bingbot: noindex")
+_ROBOTS_DIRECTIVES_WITH_VALUES = {'max-snippet', 'max-image-preview', 'max-video-preview',
+                                  'unavailable_after'}
+
 
 def has_alt_attribute(image):
     """True when the img carried an alt attribute, empty or not.
@@ -26,6 +31,26 @@ def has_alt_attribute(image):
     if 'has_alt' in image:
         return bool(image['has_alt'])
     return True
+
+
+def robots_directives(value):
+    """The directives in a meta robots or X-Robots-Tag value that apply to Google.
+
+    X-Robots-Tag can aim directives at one crawler ("bingbot: noindex,
+    nofollow"); those count only when unscoped or aimed at googlebot.
+    "none" is shorthand for noindex, nofollow.
+    """
+    directives = set()
+    agent = None
+    for token in (value or '').lower().split(','):
+        name, colon, rest = token.partition(':')
+        if colon and name.strip() not in _ROBOTS_DIRECTIVES_WITH_VALUES:
+            agent, token = name.strip(), rest
+        if agent in (None, 'googlebot'):
+            directives.add(token.split(':')[0].strip())
+    if 'none' in directives:
+        directives |= {'noindex', 'nofollow'}
+    return directives
 
 
 class IssueDetector:
@@ -54,19 +79,27 @@ class IssueDetector:
         if content_type and 'html' not in content_type.lower():
             return
 
-        # Critical SEO Issues
-        self._check_title_issues(result, issues)
-        self._check_meta_description_issues(result, issues)
-        self._check_heading_issues(result, issues)
-        self._check_content_issues(result, issues)
+        # Fetch errors, status codes and redirects apply to every response
         self._check_technical_issues(result, issues)
-        self._check_mobile_issues(result, issues)
-        self._check_accessibility_issues(result, issues)
-        self._check_social_media_issues(result, issues)
-        self._check_structured_data_issues(result, issues)
-        self._check_performance_issues(result, issues)
-        self._check_indexability_issues(result, issues)
-        self._check_broken_image_issues(result, issues)
+        self._check_redirect_issues(result, issues)
+
+        # Everything else judges the page itself. A failed fetch or an error
+        # page has no real page to judge: checking it anyway buried the actual
+        # error under a missing title, H1, viewport and so on.
+        status_code = result.get('status_code') or 0
+        if 200 <= status_code < 300:
+            self._check_title_issues(result, issues)
+            self._check_meta_description_issues(result, issues)
+            self._check_heading_issues(result, issues)
+            self._check_content_issues(result, issues)
+            self._check_canonical_issues(result, issues)
+            self._check_mobile_issues(result, issues)
+            self._check_accessibility_issues(result, issues)
+            self._check_social_media_issues(result, issues)
+            self._check_structured_data_issues(result, issues)
+            self._check_performance_issues(result, issues)
+            self._check_indexability_issues(result, issues)
+            self._check_broken_image_issues(result, issues)
 
         # Add all detected issues
         with self.issues_lock:
@@ -176,6 +209,8 @@ class IssueDetector:
                             'Server did not respond before the request timed out.'),
                 'ssl_error': ('SSL/TLS Error',
                               'Could not establish a secure connection (certificate or TLS issue).'),
+                'redirect_loop': ('Redirect Loop',
+                                  'URL redirects in a loop (or a very long chain) and never reaches a page.'),
                 'connection_error': ('Connection Error',
                                      'Could not connect to the server.'),
             }
@@ -216,7 +251,28 @@ class IssueDetector:
                 'details': 'URL redirects to another location'
             })
 
-        # Canonical URL checks
+    def _check_redirect_issues(self, result, issues):
+        """Flag redirect chains: more than one hop to reach the final page.
+
+        Loops are reported as a fetch error instead (error_type redirect_loop).
+        """
+        hops = result.get('redirects') or []
+        if len(hops) < 2 or result.get('error_type'):
+            return
+
+        steps = [f"{hop.get('url')} ({hop.get('status_code')})" for hop in hops]
+        steps.append(f"{result.get('redirected_to', '')} ({result.get('status_code')})")
+        issues.append({
+            'url': result.get('url', ''),
+            'type': 'warning',
+            'category': 'Technical',
+            'issue': 'Redirect Chain',
+            'details': f"{len(hops)} redirects to reach the final page: " + ' → '.join(steps)
+        })
+
+    def _check_canonical_issues(self, result, issues):
+        """Check the canonical URL"""
+        url = result.get('url', '')
         canonical_url = result.get('canonical_url', '')
         if not canonical_url:
             issues.append({
@@ -359,27 +415,28 @@ class IssueDetector:
             })
 
     def _check_indexability_issues(self, result, issues):
-        """Check for indexability issues"""
+        """Check for noindex/nofollow in the meta robots tag or X-Robots-Tag header"""
         url = result.get('url', '')
-        robots = result.get('robots', '').lower()
+        sources = {
+            'meta robots tag': robots_directives(result.get('robots')),
+            'X-Robots-Tag header': robots_directives(result.get('x_robots_tag')),
+        }
 
-        if 'noindex' in robots:
-            issues.append({
-                'url': url,
-                'type': 'error',
-                'category': 'Indexability',
-                'issue': 'Noindex Tag Present',
-                'details': 'Page is BLOCKED from search engines - has noindex directive'
-            })
-
-        if 'nofollow' in robots:
-            issues.append({
-                'url': url,
-                'type': 'error',
-                'category': 'Indexability',
-                'issue': 'Nofollow Tag Present',
-                'details': 'Links on this page are NOT followed by search engines - has nofollow directive'
-            })
+        for directive, issue, details in (
+            ('noindex', 'Noindex Tag Present',
+             'Page is BLOCKED from search engines - has noindex directive'),
+            ('nofollow', 'Nofollow Tag Present',
+             'Links on this page are NOT followed by search engines - has nofollow directive'),
+        ):
+            found_in = [source for source, directives in sources.items() if directive in directives]
+            if found_in:
+                issues.append({
+                    'url': url,
+                    'type': 'error',
+                    'category': 'Indexability',
+                    'issue': issue,
+                    'details': f"{details} (in the {' and '.join(found_in)})"
+                })
 
     def _check_broken_image_issues(self, result, issues):
         """Check for broken image URLs on the page"""

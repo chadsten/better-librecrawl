@@ -57,7 +57,8 @@ def png():
 
 
 def make_handler(routes, hits=None, slow_paths=(), slow_seconds=0.0):
-    """Build a handler serving `routes`: path -> html str, bytes, or (code, location)."""
+    """Build a handler serving `routes`: path -> html str, bytes, (code, location),
+    or {'status', 'body', 'headers'} for a page with its own status or headers."""
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
@@ -65,9 +66,11 @@ def make_handler(routes, hits=None, slow_paths=(), slow_seconds=0.0):
         def log_message(self, *args):
             pass
 
-        def _send(self, code, body=b'', ctype='text/html'):
+        def _send(self, code, body=b'', ctype='text/html', headers=None):
             self.send_response(code)
             self.send_header('Content-Type', ctype)
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             if body and self.command == 'GET':
@@ -87,6 +90,9 @@ def make_handler(routes, hits=None, slow_paths=(), slow_seconds=0.0):
                 self.send_header('Location', route[1])
                 self.send_header('Content-Length', '0')
                 self.end_headers()
+            elif isinstance(route, dict):
+                self._send(route.get('status', 200), route.get('body', '').encode(),
+                           headers=route.get('headers'))
             elif isinstance(route, bytes):
                 ctype = 'image/png' if self.path.endswith('.png') else 'application/octet-stream'
                 self._send(200, route, ctype)
@@ -601,6 +607,231 @@ def test_empty_alt_is_not_missing_alt():
         a.shutdown()
 
 
+def issues_for(crawler, path):
+    return [i for i in crawler.issue_detector.detected_issues if i['url'].endswith(path)]
+
+
+def test_crawl_delay_applies_without_js():
+    """Issue #110: the crawl delay was only honoured with JS rendering on, so
+    HTTP crawls fired every request at once regardless of the setting."""
+    site = BASE_PORT + 12
+    pages = [f'/p{n}' for n in range(5)]
+    routes = {'/': html(''.join(f'<a href="{p}">{p}</a>' for p in pages))}
+    routes.update({p: html('<p>page</p>') for p in pages})
+
+    a = serve(make_handler(routes), site)
+    try:
+        started = time.time()
+        crawler = crawl(f'http://127.0.0.1:{site}/', delay=0.4, concurrency=5)
+        elapsed = time.time() - started
+        # 6 pages spaced 0.4s apart cannot finish in under 5 gaps' worth
+        result('delay spaces out HTTP requests', elapsed >= 1.9 and len(crawler.crawl_results) == 6,
+               f'{elapsed:.2f}s for {len(crawler.crawl_results)} pages')
+    finally:
+        a.shutdown()
+
+
+def test_failed_pages_report_only_the_failure():
+    """A page that failed to load used to get ~11 extra issues (missing title,
+    H1, viewport, ...) piled on top of the real error."""
+    site = BASE_PORT + 13
+    a = serve(make_handler({
+        '/': html('<a href="/gone">gone</a><a href="/boom">boom</a>'),
+        '/boom': {'status': 500, 'body': 'server error'},
+    }), site)
+    try:
+        crawler = crawl(f'http://127.0.0.1:{site}/')
+        gone = [i['issue'] for i in issues_for(crawler, '/gone')]
+        boom = [i['issue'] for i in issues_for(crawler, '/boom')]
+        result('404 page reports only the 404', gone == ['404 Client Error'], str(gone))
+        result('500 page reports only the 500', boom == ['500 Server Error'], str(boom))
+
+        from src.core.issue_detector import IssueDetector
+        from src.core.seo_extractor import SEOExtractor
+        detector = IssueDetector([])
+        detector.detect_issues(SEOExtractor.create_empty_result(
+            'http://example.test/', 0, 0, 'timed out', error_type='timeout'))
+        timeout = [i['issue'] for i in detector.detected_issues]
+        result('unreachable URL reports only the fetch error', timeout == ['Request Timeout'], str(timeout))
+    finally:
+        a.shutdown()
+
+
+def test_x_robots_tag_header():
+    """noindex/nofollow sent as an HTTP header was invisible: only the meta tag
+    was read."""
+    site = BASE_PORT + 14
+    page = html('<p>page</p>')
+    a = serve(make_handler({
+        '/': html('<a href="/hdr">h</a><a href="/bing">b</a><a href="/gbot">g</a>'),
+        '/hdr': {'body': page, 'headers': {'X-Robots-Tag': 'noindex'}},
+        '/bing': {'body': page, 'headers': {'X-Robots-Tag': 'bingbot: noindex, nofollow'}},
+        '/gbot': {'body': page, 'headers': {'X-Robots-Tag': 'googlebot: nofollow'}},
+    }), site)
+    try:
+        crawler = crawl(f'http://127.0.0.1:{site}/')
+        hdr_row = next(r for r in crawler.crawl_results if r['url'].endswith('/hdr'))
+        result('header value recorded on the row', hdr_row.get('x_robots_tag') == 'noindex',
+               repr(hdr_row.get('x_robots_tag')))
+
+        hdr = {i['issue']: i['details'] for i in issues_for(crawler, '/hdr')}
+        result('header noindex is reported, naming the header',
+               'X-Robots-Tag header' in hdr.get('Noindex Tag Present', ''), str(hdr.get('Noindex Tag Present')))
+
+        bing = {i['issue'] for i in issues_for(crawler, '/bing')}
+        result('directives aimed at another crawler are ignored',
+               not bing & {'Noindex Tag Present', 'Nofollow Tag Present'}, str(bing))
+
+        gbot = {i['issue'] for i in issues_for(crawler, '/gbot')}
+        result('directives aimed at googlebot count',
+               'Nofollow Tag Present' in gbot and 'Noindex Tag Present' not in gbot, str(gbot))
+
+        from src.core.issue_detector import robots_directives
+        result('"none" means noindex and nofollow',
+               {'noindex', 'nofollow'} <= robots_directives('none'))
+        result('max-snippet:-1 is a directive, not a crawler name',
+               robots_directives('max-snippet:-1, noindex') >= {'max-snippet', 'noindex'})
+    finally:
+        a.shutdown()
+
+
+def test_redirect_chains_and_loops():
+    """Redirect chains were recorded but never reported, and a loop was retried
+    3 times at 30 redirects each."""
+    site = BASE_PORT + 15
+    hits = []
+    a = serve(make_handler({
+        '/': html('<a href="/old">o</a><a href="/single">s</a><a href="/loop-a">l</a>'),
+        '/old': (301, '/older'),
+        '/older': (301, '/new'),
+        '/single': (301, '/new'),
+        '/new': html('<p>new</p>'),
+        '/loop-a': (302, '/loop-b'),
+        '/loop-b': (302, '/loop-a'),
+    }, hits=hits), site)
+    try:
+        crawler = crawl(f'http://127.0.0.1:{site}/')
+
+        chain = {i['issue']: i['details'] for i in issues_for(crawler, '/old')}
+        result('two-hop chain is reported with every hop',
+               'Redirect Chain' in chain and '/older (301)' in chain['Redirect Chain']
+               and chain['Redirect Chain'].endswith('/new (200)'), str(chain.get('Redirect Chain')))
+
+        single = {i['issue'] for i in issues_for(crawler, '/single')}
+        result('a single redirect is not a chain', 'Redirect Chain' not in single, str(single))
+
+        loop = [i['issue'] for i in issues_for(crawler, '/loop-a')]
+        result('loop reported as Redirect Loop and nothing else', loop == ['Redirect Loop'], str(loop))
+
+        loop_row = next(r for r in crawler.crawl_results if r['url'].endswith('/loop-a'))
+        result('loop row keeps the hops it followed', len(loop_row.get('redirects') or []) >= 2,
+               str(len(loop_row.get('redirects') or [])))
+
+        loop_gets = [h for h in hits if h.startswith('GET /loop-')]
+        result('loop is not retried', len(loop_gets) <= 11, f'{len(loop_gets)} requests')
+    finally:
+        a.shutdown()
+
+
+def test_js_mode_records_redirects_and_header():
+    """The JavaScript path left redirects empty and never read X-Robots-Tag."""
+    if not _playwright_available():
+        result('js mode redirects and header', True, 'skipped, playwright not installed')
+        return
+
+    site = BASE_PORT + 16
+    a = serve(make_handler({
+        '/old': (301, '/older'),
+        '/older': (301, '/new'),
+        '/new': {'body': html('<p>new</p>'), 'headers': {'X-Robots-Tag': 'noindex'}},
+    }), site)
+    try:
+        crawler = crawl(f'http://127.0.0.1:{site}/old', max_urls=1, enable_javascript=True,
+                        js_wait_time=0, js_max_concurrent_pages=1, timeout=180)
+        row = crawler.crawl_results[0]
+        hops = [(h['url'].rsplit('/', 1)[-1], h['status_code']) for h in row.get('redirects') or []]
+        result('js mode records every redirect hop', hops == [('old', 301), ('older', 301)], str(hops))
+        result('js mode records where the chain ends',
+               (row.get('redirected_to') or '').endswith('/new'), str(row.get('redirected_to')))
+        result('js mode reads the X-Robots-Tag header', row.get('x_robots_tag') == 'noindex',
+               repr(row.get('x_robots_tag')))
+    finally:
+        a.shutdown()
+
+
+def test_link_checks_respect_crawl_delay():
+    """Image and link HEAD checks against the crawled site ignored the crawl
+    delay; checks against other hosts (CDNs) are left unthrottled."""
+    site, cdn = BASE_PORT + 17, BASE_PORT + 18
+    names = [f'i{n}.png' for n in range(4)]
+    routes = {'/local': html(''.join(f'<img src="/{n}" alt="x">' for n in names)),
+              '/cdn': html(''.join(f'<img src="http://127.0.0.1:{cdn}/{n}" alt="x">' for n in names))}
+    routes.update({f'/{n}': png() for n in names})
+    a = serve(make_handler(routes), site)
+    b = serve(make_handler({f'/{n}': png() for n in names}), cdn)
+    try:
+        started = time.time()
+        crawl(f'http://127.0.0.1:{site}/local', delay=0.4)
+        local = time.time() - started
+        # the page plus 4 same-site image checks, 0.4s apart
+        result('same-site image checks wait for the crawl delay', local >= 1.5, f'{local:.2f}s')
+
+        started = time.time()
+        crawl(f'http://127.0.0.1:{site}/cdn', delay=0.4)
+        offsite = time.time() - started
+        result('off-site image checks are not held back', offsite < 1.2, f'{offsite:.2f}s')
+    finally:
+        a.shutdown()
+        b.shutdown()
+
+
+def test_page_fetch_is_one_request():
+    """Every page cost a HEAD (for the file-size limit) before its GET."""
+    site = BASE_PORT + 19
+    hits = []
+    a = serve(make_handler({
+        '/': html('<a href="/page">p</a><a href="/big">b</a>'),
+        '/page': html('<p>page</p>'),
+        '/big': html('x' * 5000),
+    }, hits=hits), site)
+    try:
+        crawler = crawl(f'http://127.0.0.1:{site}/', max_file_size=2000)
+        result('pages are fetched with a single GET', sorted(hits) == ['GET /', 'GET /big', 'GET /page'],
+               str(sorted(hits)))
+        big = next(r for r in crawler.crawl_results if r['url'].endswith('/big'))
+        result('a file over the size limit is still turned away',
+               big.get('error_type') == 'file_too_large', str(big.get('error')))
+        page = next(r for r in crawler.crawl_results if r['url'].endswith('/page'))
+        result('a normal page still records its size', page.get('size', 0) > 0, str(page.get('size')))
+    finally:
+        a.shutdown()
+
+
+def test_new_fields_survive_the_database():
+    """x_robots_tag and redirected_to must round-trip through a saved crawl."""
+    import tempfile
+    from src import crawl_db
+
+    original = crawl_db.DB_FILE
+    with tempfile.TemporaryDirectory() as tmp:
+        crawl_db.DB_FILE = os.path.join(tmp, 'test.db')
+        try:
+            crawl_db.init_crawl_tables()
+            crawl_db.save_url_batch(1, [{
+                'url': 'http://example.test/old', 'status_code': 200,
+                'x_robots_tag': 'noindex', 'redirected_to': 'http://example.test/new',
+                'redirects': [{'url': 'http://example.test/old', 'status_code': 301}],
+            }])
+            row = crawl_db.load_crawled_urls(1)[0]
+            result('x_robots_tag and redirected_to are saved and loaded',
+                   row.get('x_robots_tag') == 'noindex'
+                   and row.get('redirected_to') == 'http://example.test/new'
+                   and row.get('redirects') == [{'url': 'http://example.test/old', 'status_code': 301}],
+                   str({k: row.get(k) for k in ('x_robots_tag', 'redirected_to', 'redirects')}))
+        finally:
+            crawl_db.DB_FILE = original
+
+
 def _playwright_available():
     try:
         import playwright  # noqa: F401
@@ -620,6 +851,14 @@ TESTS = (
     test_duplicate_detection_is_linear,
     test_export_formats_apply_to_every_data_type,
     test_empty_alt_is_not_missing_alt,
+    test_crawl_delay_applies_without_js,
+    test_failed_pages_report_only_the_failure,
+    test_x_robots_tag_header,
+    test_redirect_chains_and_loops,
+    test_js_mode_records_redirects_and_header,
+    test_link_checks_respect_crawl_delay,
+    test_page_fetch_is_one_request,
+    test_new_fields_survive_the_database,
 )
 
 

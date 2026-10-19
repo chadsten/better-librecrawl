@@ -264,7 +264,8 @@ class SEOExtractor:
 
         error_type: optional classification when status_code is 0 (no HTTP
         response). Values: 'dns_not_found', 'connection_refused', 'timeout',
-        'ssl_error', 'connection_error', 'file_too_large', or None.
+        'ssl_error', 'redirect_loop', 'connection_error', 'file_too_large',
+        or None.
         """
         return {
             'url': url,
@@ -288,6 +289,7 @@ class SEOExtractor:
             'charset': '',
             'viewport': '',
             'robots': '',
+            'x_robots_tag': '',
             'author': '',
             'keywords': '',
             'generator': '',

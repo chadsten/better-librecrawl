@@ -717,6 +717,14 @@ function updateTimer() {
     }
 }
 
+// Long values are cut off with an ellipsis; show the full text on hover
+document.addEventListener('mouseover', (event) => {
+    const cell = event.target.closest('.data-table td');
+    if (cell && !cell.title && cell.scrollWidth > cell.clientWidth) {
+        cell.title = cell.textContent;
+    }
+});
+
 // Table Management
 function initializeTables() {
     // Clear any existing data first
@@ -1829,6 +1837,7 @@ function showUrlDetails(url) {
                                 <div><strong>Charset:</strong> ${safeCharset}</div>
                                 <div><strong>Canonical URL:</strong> ${safeCanonical}</div>
                                 <div><strong>Robots Meta:</strong> ${safeRobots}</div>
+                                <div><strong>X-Robots-Tag:</strong> ${escapeHtml(urlData.x_robots_tag) || 'N/A'}</div>
                             </div>
                         </div>
 
@@ -1891,6 +1900,23 @@ function showUrlDetails(url) {
                                 ${urlData.error ? `<div><strong>Error:</strong> ${escapeHtml(urlData.error)}</div>` : ''}
                             </div>
                         </div>
+
+                        ${(urlData.redirects && urlData.redirects.length > 0) ? `
+                        <div class="details-section">
+                            <h4>↪️ Redirects</h4>
+                            <div class="details-grid">
+                                <div><strong>${urlData.redirects.length} redirect${urlData.redirects.length !== 1 ? 's' : ''} before the final page:</strong></div>
+                            </div>
+                            <div class="details-subsection">
+                                <ol style="padding-left: 20px; margin: 10px 0;">
+                                    ${urlData.redirects.map(hop =>
+                                        `<li style="padding: 5px 0; word-break: break-all;">${escapeHtml(hop.url)} <strong>(${escapeHtml(String(hop.status_code))})</strong></li>`
+                                    ).join('')}
+                                    ${urlData.redirected_to ? `<li style="padding: 5px 0; word-break: break-all;">${escapeHtml(urlData.redirected_to)} <strong>(${escapeHtml(String(urlData.status_code))})</strong> — final page</li>` : ''}
+                                </ol>
+                            </div>
+                        </div>
+                        ` : ''}
 
                         ${(urlData.linked_from && urlData.linked_from.length > 0) ? `
                         <div class="details-section">
@@ -2315,7 +2341,7 @@ function renderOverviewRow(row, urlData, index) {
         urlData.url,
         urlData.status_code,
         urlData.title || '',
-        (urlData.meta_description || '').substring(0, 50) + (urlData.meta_description && urlData.meta_description.length > 50 ? '...' : ''),
+        urlData.meta_description || '',
         urlData.h1 || '',
         keywordsInfo,
         urlData.word_count || 0,
@@ -2415,18 +2441,18 @@ function renderExternalLinkRow(row, link, index) {
 function renderIssueRow(row, issue, index) {
     row.setAttribute('data-issue-type', issue.type);
 
-    // Set row style based on issue type
+    // Tint the row by issue type (the pinned URL cell reads --row-tint too)
     let typeIcon, typeColor;
     if (issue.type === 'error') {
-        row.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
+        row.style.setProperty('--row-tint', 'rgba(239, 68, 68, 0.1)');
         typeIcon = '❌';
         typeColor = '#ef4444';
     } else if (issue.type === 'warning') {
-        row.style.backgroundColor = 'rgba(245, 158, 11, 0.1)';
+        row.style.setProperty('--row-tint', 'rgba(245, 158, 11, 0.1)');
         typeIcon = '⚠️';
         typeColor = '#f59e0b';
     } else {
-        row.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
+        row.style.setProperty('--row-tint', 'rgba(59, 130, 246, 0.1)');
         typeIcon = 'ℹ️';
         typeColor = '#3b82f6';
     }

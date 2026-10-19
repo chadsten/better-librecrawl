@@ -136,6 +136,14 @@ def init_crawl_tables():
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+        # Migration: X-Robots-Tag header, and where a redirect chain ends
+        # (the hops alone don't include the final URL)
+        for column in ('x_robots_tag', 'redirected_to'):
+            try:
+                cursor.execute(f'ALTER TABLE crawled_urls ADD COLUMN {column} TEXT')
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
         # Links table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS crawl_links (
@@ -314,7 +322,9 @@ def save_url_batch(crawl_id, urls):
                     url_data.get('javascript_rendered', False),
                     url_data.get('error_type'),
                     url_data.get('render_time'),
-                    url_data.get('link_check_only', False)
+                    url_data.get('link_check_only', False),
+                    url_data.get('x_robots_tag'),
+                    url_data.get('redirected_to')
                 )
                 rows.append(row)
 
@@ -326,8 +336,8 @@ def save_url_batch(crawl_id, urls):
                     meta_tags, og_tags, twitter_tags, json_ld, analytics, images,
                     hreflang, schema_org, redirects, linked_from,
                     external_links, internal_links, response_time, javascript_rendered,
-                    error_type, render_time, link_check_only
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    error_type, render_time, link_check_only, x_robots_tag, redirected_to
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', rows)
 
             print(f"Saved {len(urls)} URLs to database for crawl {crawl_id}")

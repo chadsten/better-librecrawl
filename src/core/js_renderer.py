@@ -108,24 +108,38 @@ class JavaScriptRenderer:
             pass
         return navigation_ms
 
+    @staticmethod
+    async def _redirect_hops(response):
+        """The redirects the browser followed to reach response, oldest first"""
+        hops = []
+        request = response.request.redirected_from if response else None
+        while request:
+            hop_response = await request.response()
+            hops.append({'url': request.url,
+                         'status_code': hop_response.status if hop_response else 0})
+            request = request.redirected_from
+        hops.reverse()
+        return hops
+
     async def render_page(self, url):
         """
         Render a page with JavaScript and return the HTML content
 
         Returns:
-            tuple: (html_content, status_code, error_message, final_url, timing)
+            tuple: (html_content, status_code, error_message, final_url, page_info)
             final_url is where the page ended up after any redirects.
-            timing carries response_ms (the server's own response, excluding the
-            configured render wait) and render_ms (the whole render). Keeping
-            them apart matters because js_wait_time is a deliberate sleep, and
+            page_info carries response_ms (the server's own response, excluding
+            the configured render wait), render_ms (the whole render), the
+            X-Robots-Tag header and the redirect hops. Keeping the timings
+            apart matters because js_wait_time is a deliberate sleep, and
             counting it as response time flags every page as slow.
         """
         page = None
-        empty_timing = {'response_ms': 0.0, 'render_ms': 0.0}
+        empty_info = {'response_ms': 0.0, 'render_ms': 0.0, 'x_robots_tag': '', 'redirects': []}
         try:
             page = await self.get_page()
             if not page:
-                return None, 0, "No JavaScript page available", None, empty_timing
+                return None, 0, "No JavaScript page available", None, empty_info
 
             # Navigate to the page
             try:
@@ -146,16 +160,20 @@ class JavaScriptRenderer:
                 status_code = response.status if response else 200
                 render_ms = (time.monotonic() - started) * 1000
 
+                x_robots_tag = await response.header_value('x-robots-tag') if response else None
+
                 return html_content, status_code, None, page.url, {
-                    'response_ms': response_ms, 'render_ms': render_ms}
+                    'response_ms': response_ms, 'render_ms': render_ms,
+                    'x_robots_tag': x_robots_tag or '',
+                    'redirects': await self._redirect_hops(response)}
 
             except PlaywrightTimeoutError:
-                return None, 0, "JavaScript rendering timeout", None, empty_timing
+                return None, 0, "JavaScript rendering timeout", None, empty_info
             except Exception as e:
-                return None, 0, f"Navigation error: {str(e)}", None, empty_timing
+                return None, 0, f"Navigation error: {str(e)}", None, empty_info
 
         except Exception as e:
-            return None, 0, f"JavaScript rendering error: {str(e)}", None, empty_timing
+            return None, 0, f"JavaScript rendering error: {str(e)}", None, empty_info
 
         finally:
             if page:

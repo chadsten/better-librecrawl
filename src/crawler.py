@@ -21,6 +21,10 @@ IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'ico', 'avif', '
 # Parallel HEAD checks for images and (uncrawled) external links
 HEAD_CHECK_WORKERS = 5
 
+# Redirects followed before a URL is reported as a redirect loop
+# (requests defaults to 30, which costs a looping site 30 requests per URL)
+MAX_REDIRECTS = 10
+
 
 def classify_fetch_error(exc_or_msg):
     """Classify a failed-fetch error into a coarse error_type.
@@ -30,13 +34,15 @@ def classify_fetch_error(exc_or_msg):
     Falls back to message inspection.
 
     Returns one of: 'dns_not_found', 'timeout', 'connection_refused',
-    'ssl_error', 'connection_error'.
+    'ssl_error', 'redirect_loop', 'connection_error'.
     """
     if isinstance(exc_or_msg, BaseException):
         seen = set()
         cur = exc_or_msg
         while cur is not None and id(cur) not in seen:
             seen.add(id(cur))
+            if isinstance(cur, requests.exceptions.TooManyRedirects):
+                return 'redirect_loop'
             if isinstance(cur, socket.gaierror):
                 return 'dns_not_found'
             if isinstance(cur, ssl.SSLError) or isinstance(cur, requests.exceptions.SSLError):
@@ -68,7 +74,14 @@ def classify_fetch_error(exc_or_msg):
         return 'connection_refused'
     if 'ssl' in msg or 'certificate' in msg or 'err_cert' in msg or 'tls' in msg:
         return 'ssl_error'
+    if 'err_too_many_redirects' in msg:
+        return 'redirect_loop'
     return 'connection_error'
+
+
+def redirect_hops(history):
+    """The redirects requests followed, oldest first, as {url, status_code}"""
+    return [{'url': str(h.url), 'status_code': h.status_code} for h in history]
 
 from src.core.rate_limiter import RateLimiter
 from src.core.seo_extractor import SEOExtractor
@@ -90,6 +103,7 @@ class WebCrawler:
     def __init__(self, crawl_id=None, resume_from_db=False):
         # HTTP session
         self.session = requests.Session()
+        self.session.max_redirects = MAX_REDIRECTS
         self.session.headers.update({
             'User-Agent': 'LibreCrawl/1.0 (Web Crawler)'
         })
@@ -1019,37 +1033,42 @@ class WebCrawler:
         """Crawl a single URL using traditional HTTP requests"""
         print(f"Starting crawl of {url}")
         retries = self.config.get('retries', 3)
+
+        # Space requests out by the crawl delay (shared across all workers),
+        # as the JavaScript path already does
+        if self.config.get('delay', 0) > 0:
+            self.rate_limiter.acquire()
+
         start_time = time.perf_counter()
 
         try:
-            # Check file size if configured
-            if self.config.get('max_file_size', 0) > 0:
-                try:
-                    head_response = self.session.head(
-                        url,
-                        timeout=self.config['timeout'],
-                        allow_redirects=self.config['follow_redirects']
-                    )
-                    content_length = head_response.headers.get('content-length')
-                    if content_length and int(content_length) > self.config['max_file_size']:
-                        return self.seo_extractor.create_empty_result(
-                            url, depth, 0,
-                            f'File too large: {content_length} bytes',
-                            error_type='file_too_large'
-                        )
-                except:
-                    pass  # Continue if HEAD request fails
-
-            # Fetch the page with retries
+            # Fetch the page with retries. Streamed, so a file over the size
+            # limit is turned away on its Content-Length before the body
+            # downloads (this used to cost a separate HEAD request per page)
+            max_file_size = self.config.get('max_file_size', 0)
             response = None
             for attempt in range(retries + 1):
                 try:
                     response = self.session.get(
                         url,
                         timeout=self.config['timeout'],
-                        allow_redirects=self.config['follow_redirects']
+                        allow_redirects=self.config['follow_redirects'],
+                        stream=True
                     )
+                    content_length = response.headers.get('content-length', '')
+                    if (max_file_size > 0 and content_length.isdigit()
+                            and int(content_length) > max_file_size):
+                        response.close()
+                        return self.seo_extractor.create_empty_result(
+                            url, depth, 0,
+                            f'File too large: {content_length} bytes',
+                            error_type='file_too_large'
+                        )
+                    # Download the body here, so a dropped transfer is retried too
+                    size = len(response.content)
                     break
+                except requests.exceptions.TooManyRedirects:
+                    raise  # a loop loops again on retry
                 except Exception as e:
                     if attempt >= retries:
                         raise e
@@ -1071,7 +1090,7 @@ class WebCrawler:
                 'status_code': response.status_code,
                 'error_type': None,
                 'content_type': response.headers.get('content-type', '').split(';')[0],
-                'size': len(response.content),
+                'size': size,
                 'is_internal': is_internal,
                 'depth': depth,
                 'title': '',
@@ -1088,6 +1107,7 @@ class WebCrawler:
                 'charset': '',
                 'viewport': '',
                 'robots': '',
+                'x_robots_tag': response.headers.get('X-Robots-Tag', ''),
                 'author': '',
                 'keywords': '',
                 'generator': '',
@@ -1115,9 +1135,7 @@ class WebCrawler:
 
             # Record the redirect chain (previously always left empty)
             if response.history:
-                result['redirects'] = [
-                    {'url': str(h.url), 'status_code': h.status_code} for h in response.history
-                ]
+                result['redirects'] = redirect_hops(response.history)
                 result['redirected_to'] = final_url
 
             # Only parse HTML content
@@ -1173,6 +1191,16 @@ class WebCrawler:
             # or a loaded crawl would show rows the crawl never counted.
             return result
 
+        except requests.exceptions.TooManyRedirects as e:
+            result = self.seo_extractor.create_empty_result(
+                url, depth, 0,
+                f'Redirected more than {self.session.max_redirects} times without reaching a page',
+                error_type='redirect_loop'
+            )
+            if e.response is not None:
+                result['redirects'] = redirect_hops(e.response.history)
+            return result
+
         except Exception as e:
             return self.seo_extractor.create_empty_result(
                 url, depth, 0, str(e),
@@ -1185,7 +1213,7 @@ class WebCrawler:
 
         try:
             # Render page with JavaScript
-            html_content, status_code, error, final_url, timing = \
+            html_content, status_code, error, final_url, page_info = \
                 await self.js_renderer.render_page(url)
 
             if error:
@@ -1224,6 +1252,7 @@ class WebCrawler:
                 'charset': '',
                 'viewport': '',
                 'robots': '',
+                'x_robots_tag': page_info['x_robots_tag'],
                 'author': '',
                 'keywords': '',
                 'generator': '',
@@ -1242,12 +1271,14 @@ class WebCrawler:
                 'external_links': 0,
                 'internal_links': 0,
                 'response_time': 0,
-                'redirects': [],
+                'redirects': page_info['redirects'],
                 'hreflang': [],
                 'schema_org': [],
                 'linked_from': [],
                 'javascript_rendered': True
             }
+            if result['redirects']:
+                result['redirected_to'] = final_url
 
             # Parse HTML
             soup = BeautifulSoup(html_content, 'html.parser')
@@ -1293,8 +1324,8 @@ class WebCrawler:
             result['linked_from'] = self.link_manager.get_source_pages(url)
             # The render wait is a setting, not slowness,
             # so keep it out of response_time (issue #93).
-            result['response_time'] = round(timing.get('response_ms') or 0, 2)
-            result['render_time'] = round(timing.get('render_ms') or 0, 2)
+            result['response_time'] = round(page_info.get('response_ms') or 0, 2)
+            result['render_time'] = round(page_info.get('render_ms') or 0, 2)
 
             # NB: the DB batch is appended by the worker when it accepts this
             # result into crawl_results, not here. A fetch that finishes after
@@ -1524,11 +1555,13 @@ class WebCrawler:
             content_type = ''
             size = 0
             try:
+                self._throttle_link_check(url)
                 resp = self.session.head(url, timeout=5, allow_redirects=True)
                 # Plenty of servers refuse HEAD but serve GET; confirm with a
                 # streamed GET whose body is never read
                 if resp.status_code in (403, 405, 501):
                     resp.close()
+                    self._throttle_link_check(url)
                     resp = self.session.get(url, timeout=5, allow_redirects=True, stream=True)
                     resp.close()
                 link['target_status'] = resp.status_code
@@ -1552,6 +1585,16 @@ class WebCrawler:
 
         mutated.extend(batch)
         self._emit_link_updates(mutated)
+
+    def _throttle_link_check(self, url):
+        """Wait out the crawl delay before checking a link on the site being
+        crawled, sharing the limiter that spaces out page fetches.
+
+        Checks against other hosts (CDNs, outbound links) aren't held back:
+        they're spread across many hosts and capped at 50 per page.
+        """
+        if self.config.get('delay', 0) > 0 and self.link_manager.is_internal(url):
+            self.rate_limiter.acquire()
 
     def _emit_link_updates(self, links):
         """Journal status changes made to links outside the link manager"""
